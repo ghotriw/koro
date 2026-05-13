@@ -1,0 +1,51 @@
+# Xcode
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.xcbkptlist
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# Secrets / signing
+*.env
+*.pem
+*.p12
+*.mobileprovision
+AuthKey_*.p8
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Coverage
+*.gcda
+*.gcno
+*.profdata
+
+# Editors
+*.swp
+*~
+
+# Project Specific
+KokoroAssets/kokoro-v1_0.safetensors

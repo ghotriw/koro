@@ -1,0 +1,489 @@
+import Foundation
+import AVFoundation
+import KokoroSwift
+import MLX
+import SwiftData
+import Combine
+import MLXUtilsLibrary
+
+@MainActor
+final class TTSService: ObservableObject {
+    private var kokoro: KokoroTTS?
+    private var voices: [String: MLXArray] = [:]
+    private var initializationTask: Task<Void, Never>?
+
+    @Published var isGenerating = false
+    @Published var isReady = false
+    @Published var progress: Float = 0.0
+    @Published var availableVoices: [VoiceInfo] = []
+
+    private var unloadTask: Task<Void, Never>?
+
+    static let shared = TTSService()
+
+    struct VoiceInfo: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let flag: String
+        let genderEmoji: String
+
+        var displayName: String {
+            "\(flag) \(genderEmoji) \(name)"
+        }
+    }
+
+    private let voiceMap: [String: (name: String, flag: String, gender: String)] = [
+        "af_heart": ("Heart", "🇺🇸", "👩"),
+        "af_alloy": ("Alloy", "🇺🇸", "👩"),
+        "af_aoede": ("Aoede", "🇺🇸", "👩"),
+        "af_bella": ("Bella", "🇺🇸", "👩"),
+        "af_jessica": ("Jessica", "🇺🇸", "👩"),
+        "af_kore": ("Kore", "🇺🇸", "👩"),
+        "af_nicole": ("Nicole", "🇺🇸", "👩"),
+        "af_nova": ("Nova", "🇺🇸", "👩"),
+        "af_river": ("River", "🇺🇸", "👩"),
+        "af_sky": ("Sky", "🇺🇸", "👩"),
+        "am_adam": ("Adam", "🇺🇸", "👨"),
+        "am_echo": ("Echo", "🇺🇸", "👨"),
+        "am_eric": ("Eric", "🇺🇸", "👨"),
+        "am_fenrir": ("Fenrir", "🇺🇸", "👨"),
+        "am_liam": ("Liam", "🇺🇸", "👨"),
+        "am_michael": ("Michael", "🇺🇸", "👨"),
+        "am_onyx": ("Onyx", "🇺🇸", "👨"),
+        "am_puck": ("Puck", "🇺🇸", "👨"),
+        "am_santa": ("Santa", "🇺🇸", "👨"),
+        "bf_alice": ("Alice", "🇬🇧", "👩"),
+        "bf_emma": ("Emma", "🇬🇧", "👩"),
+        "bf_isabella": ("Isabella", "🇬🇧", "👩"),
+        "bf_lily": ("Lily", "🇬🇧", "👩"),
+        "bm_daniel": ("Daniel", "🇬🇧", "👨"),
+        "bm_fable": ("Fable", "🇬🇧", "👨"),
+        "bm_george": ("George", "🇬🇧", "👨"),
+        "bm_lewis": ("Lewis", "🇬🇧", "👨")
+    ]
+
+    private init() {
+        // Start initial prep
+        Task {
+            await prepareEngine()
+        }
+    }
+
+    func prepareEngine() async {
+        unloadTask?.cancel()
+
+        if isReady { return }
+
+        // If we are currently initializing, await that task
+        if let task = initializationTask {
+            _ = await task.result
+            return
+        }
+
+        // Otherwise, start initialization
+        let task = Task {
+            await performInitialization()
+        }
+        self.initializationTask = task
+        _ = await task.result
+    }
+
+    private func performInitialization() async {
+        // Double check isReady inside the task
+        if isReady {
+            self.initializationTask = nil
+            return
+        }
+
+        print("🚀 Starting TTS Engine initialization...")
+
+        guard let modelURL = Bundle.main.url(forResource: "kokoro-v1_0", withExtension: "safetensors") else {
+            print("❌ Critical: kokoro-v1_0.safetensors not found in bundle.")
+            return
+        }
+
+        guard let voicesURL = Bundle.main.url(forResource: "voices", withExtension: "npz") else {
+            print("❌ Critical: voices.npz not found in bundle.")
+            return
+        }
+
+        do {
+            let result = try await Task.detached(priority: .userInitiated) { () -> (KokoroTTS, [String: MLXArray]) in
+                print("📦 Loading model weights...")
+                let kokoro = KokoroTTS(modelPath: modelURL)
+                print("🗣️ Loading voices...")
+                let voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
+                return (kokoro, voices)
+            }.value
+// 4. Update state on MainActor
+self.kokoro = result.0
+self.voices = result.1
+
+// Only generate availableVoices if they haven't been loaded yet
+if self.availableVoices.isEmpty {
+    let rawVoiceKeys = Array(result.1.keys)
+        .map { $0.replacingOccurrences(of: ".npy", with: "") }
+
+    self.availableVoices = rawVoiceKeys.map { id in
+        if let mapped = voiceMap[id] {
+            return VoiceInfo(id: id, name: mapped.name, flag: mapped.flag, genderEmoji: mapped.gender)
+        } else {
+            // Fallback for unknown voices
+            let components = id.split(separator: "_")
+            let name = components.last?.capitalized ?? id
+            let flag = id.hasPrefix("a") ? "🇺🇸" : (id.hasPrefix("b") ? "🇬🇧" : "👤")
+
+            // Detect gender from second character (f/m)
+            let genderEmoji: String
+            if id.count > 1 {
+                let genderChar = id[id.index(id.startIndex, offsetBy: 1)]
+                genderEmoji = genderChar == "f" ? "👩" : (genderChar == "m" ? "👨" : "👤")
+            } else {
+                genderEmoji = "👤"
+            }
+
+            return VoiceInfo(id: id, name: String(name), flag: flag, genderEmoji: genderEmoji)
+        }
+    }.sorted { $0.name < $1.name }
+}
+self.isReady = true
+
+            print("✅ TTS Engine initialized with \(self.voices.count) voices")
+
+        } catch {
+            print("❌ Failed to initialize TTS Engine: \(error.localizedDescription)")
+        }
+
+        self.initializationTask = nil
+    }
+
+    func generateAudio(for entry: Entry, voiceName: String, speed: Float) async throws {
+        // Ensure engine is ready before starting
+        if !isReady {
+            await prepareEngine()
+        }
+
+        guard let kokoro = kokoro else {
+            print("❌ Cannot generate audio: Engine not initialized")
+            return
+        }
+
+        let fullVoiceName = voiceName.hasSuffix(".npy") ? voiceName : "\(voiceName).npy"
+        guard let voice = voices[fullVoiceName] else {
+            print("❌ Voice \(voiceName) not found")
+            return
+        }
+
+        isGenerating = true
+        progress = 0.0
+
+        let rawText = entry.body
+        let text = normalizeText(rawText)
+        
+        let chunks = splitIntoChunks(text, speed: speed)
+        print("📝 Split text into \(chunks.count) chunks (speed: \(speed))")
+
+        // Detect language based on voice ID prefix
+        // a = American (enUS), b = British (enGB)
+        let language: Language = fullVoiceName.hasPrefix("b") ? .enGB : .enUS
+        print("🌐 Using language: \(language == .enGB ? "British" : "American")")
+
+        var allWordTokens: [WordToken] = []
+        var currentAudioTime: TimeInterval = 0
+        var searchStartIndex = rawText.startIndex
+
+        // Prepare file for streaming
+        let fileManager = FileManager.default
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+
+        // Use a temporary CAF file for streaming (safe and simple)
+        let tempAudioURL = documentsURL.appendingPathComponent("\(entry.persistentModelID.hashValue)_temp.caf")
+        // Final compressed destination
+        let finalAudioURL = documentsURL.appendingPathComponent("\(entry.persistentModelID.hashValue).m4a")
+
+        if fileManager.fileExists(atPath: tempAudioURL.path) {
+            try? fileManager.removeItem(at: tempAudioURL)
+        }
+        if fileManager.fileExists(atPath: finalAudioURL.path) {
+            try? fileManager.removeItem(at: finalAudioURL)
+        }
+
+        let sampleRate = 24000.0
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        // Process chunks in a background task
+        try await Task.detached(priority: .userInitiated) {
+            let audioFile = try AVAudioFile(forWriting: tempAudioURL, settings: format.settings)
+
+            for (index, chunk) in chunks.enumerated() {
+                await MainActor.run {
+                    self.progress = Float(index) / Float(chunks.count)
+                }
+
+                try autoreleasepool {
+                    print("🔄 Starting chunk \(index + 1)/\(chunks.count) (length: \(chunk.count) chars)")
+
+                    let (audio, mTokens) = try kokoro.generateAudio(voice: voice, language: language, text: chunk, speed: speed)
+                    // Write audio buffer immediately to disk
+                    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(audio.count))!
+                    buffer.frameLength = buffer.frameCapacity
+                    for i in 0..<audio.count {
+                        buffer.floatChannelData![0][i] = audio[i]
+                    }
+                    try audioFile.write(from: buffer)
+
+                    // Update tokens
+                    if let mTokens = mTokens {
+                        for mToken in mTokens {
+                            let word = mToken.text
+                            guard !word.isEmpty else { continue }
+                            
+                            // Log phonemes for debugging
+                            if let phonemes = mToken.phonemes {
+                                print("DEBUG: Word '\(word)' -> Phonemes: [\(phonemes)]")
+                            }
+
+                            if let range = rawText.range(of: word, range: searchStartIndex..<rawText.endIndex) {
+                                let nsRange = NSRange(range, in: rawText)
+                                allWordTokens.append(WordToken(
+                                    word: word,
+                                    nsRange: nsRange,
+                                    startTime: (mToken.start_ts ?? 0) + currentAudioTime,
+                                    endTime: (mToken.end_ts ?? 0) + currentAudioTime
+                                ))
+                                searchStartIndex = range.upperBound
+                            }
+                        }
+                    }
+                    currentAudioTime += Double(audio.count) / sampleRate
+                }
+            }
+            // audioFile goes out of scope here and should be closed
+        }.value
+
+        // Check if temp file exists and has content
+        if let attrs = try? fileManager.attributesOfItem(atPath: tempAudioURL.path),
+           let size = attrs[.size] as? UInt64 {
+            print("📁 Temp CAF file size: \(size) bytes")
+            if size == 0 {
+                throw NSError(domain: "TTSService", code: 5, userInfo: [NSLocalizedDescriptionKey: "Temp audio file is empty"])
+            }
+        }
+
+        // Convert temporary CAF to final M4A using AVAssetWriter for precise control
+        print("📦 Compressing audio to M4A (64kbps)...")
+        try await convertToM4A(inputURL: tempAudioURL, outputURL: finalAudioURL)
+
+        // Clean up temp file
+        try? fileManager.removeItem(at: tempAudioURL)
+
+        // Update entry
+        entry.audioFileURL = finalAudioURL
+        let encoder = JSONEncoder()
+        if let encodedTokens = try? encoder.encode(allWordTokens) {
+            entry.tokens = encodedTokens
+        }
+
+        progress = 1.0
+        isGenerating = false
+
+        // Memory Optimization: Clear GPU cache immediately after generation
+        GPU.clearCache()
+
+        // Start/Reset inactivity timer to unload weights after 2 minutes
+        scheduleUnload()
+    }
+
+    private func convertToM4A(inputURL: URL, outputURL: URL) async throws {
+        let asset = AVAsset(url: inputURL)
+
+        guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw NSError(domain: "TTSService", code: 3, userInfo: [NSLocalizedDescriptionKey: "No audio track found"])
+        }
+
+        // 64kbps is excellent for 24kHz mono speech
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 24000,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64_000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
+        writerInput.expectsMediaDataInRealTime = false
+        writer.add(writerInput)
+
+        // Explicitly request 16-bit Integer PCM (more compatible with AAC encoder than Float32)
+        let readerOutputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+
+        let reader = try AVAssetReader(asset: asset)
+        let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: readerOutputSettings)
+        reader.add(readerOutput)
+
+        reader.startReading()
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writerInput.requestMediaDataWhenReady(on: DispatchQueue(label: "audio.convert")) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let buffer = readerOutput.copyNextSampleBuffer() {
+                        writerInput.append(buffer)
+                    } else {
+                        writerInput.markAsFinished()
+                        writer.finishWriting {
+                            if writer.status == .failed {
+                                let error = writer.error ?? NSError(domain: "TTSService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Write failed"])
+                                print("❌ AVAssetWriter failed: \(error)")
+                                continuation.resume(throwing: error)
+                            } else {
+                                continuation.resume()
+                            }
+                        }
+                        return
+                    }
+                }
+            }
+        }
+
+        if reader.status == .failed {
+            let error = reader.error ?? NSError(domain: "TTSService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Read failed"])
+            print("❌ AVAssetReader failed: \(error)")
+            throw error
+        }
+    }
+
+    private func scheduleUnload() {
+        unloadTask?.cancel()
+        unloadTask = Task {
+            do {
+                // Wait for 1 minute of inactivity
+                try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                if !Task.isCancelled {
+                    await unloadEngine()
+                }
+            } catch {
+                // Task cancelled
+            }
+        }
+    }
+
+    func unloadEngine() async {
+        guard isReady && !isGenerating else { return }
+
+        print("🧹 Inactivity timeout: Unloading TTS Engine to free memory...")
+        kokoro = nil
+        voices = [:]
+        isReady = false
+        GPU.clearCache()
+    }
+
+    private func splitIntoChunks(_ text: String, speed: Float) -> [String] {
+        // Dynamic chunk size based on speed. Slower speed = longer audio = more memory.
+        let calculatedLimit = Int(400 * speed)
+        let effectiveLimit = min(450, max(100, calculatedLimit))
+
+        // Split by sentences OR newlines
+        let pattern = "(?<=[.!?])\\s+|\\n+"
+        let regex = try? NSRegularExpression(pattern: pattern)
+        let range = NSRange(text.startIndex..., in: text)
+
+        var sentences: [String] = []
+        var lastEnd = text.startIndex
+
+        if let matches = regex?.matches(in: text, range: range) {
+            for match in matches {
+                if let matchRange = Range(match.range, in: text) {
+                    let sentence = String(text[lastEnd..<matchRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                    if !sentence.isEmpty {
+                        sentences.append(sentence)
+                    }
+                    lastEnd = matchRange.upperBound
+                }
+            }
+        }
+
+        let remaining = String(text[lastEnd...]).trimmingCharacters(in: .whitespaces)
+        if !remaining.isEmpty {
+            sentences.append(remaining)
+        }
+
+        // Group sentences into chunks using the dynamic limit
+        var chunks: [String] = []
+        var currentChunk = ""
+
+        for sentence in sentences {
+            if (currentChunk.count + sentence.count) < effectiveLimit {
+                currentChunk += (currentChunk.isEmpty ? "" : " ") + sentence
+            } else {
+                if !currentChunk.isEmpty {
+                    chunks.append(currentChunk)
+                }
+                currentChunk = sentence
+            }
+        }
+
+        if !currentChunk.isEmpty {
+            chunks.append(currentChunk)
+        }
+
+        return chunks.isEmpty ? [text] : chunks
+    }
+
+    private func saveAudio(samples: [Float], to url: URL) throws {
+        let sampleRate = 24000.0
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        let audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
+        buffer.frameLength = buffer.frameCapacity
+
+        for i in 0..<samples.count {
+            buffer.floatChannelData![0][i] = samples[i]
+        }
+
+        try audioFile.write(from: buffer)
+    }
+
+    private func normalizeText(_ text: String) -> String {
+        var normalized = text
+        
+        // 1. Replace smart quotes with straight ones
+        let replacements = [
+            "“": "\"", "”": "\"",
+            "‘": "'", "’": "'",
+            "«": "\"", "»": "\"",
+            "—": "-", "–": "-" // EM Dash and EN Dash to hyphen
+        ]
+        
+        for (target, replacement) in replacements {
+            normalized = normalized.replacingOccurrences(of: target, with: replacement)
+        }
+        
+        // 2. Ensure spacing after punctuation if it's followed by a letter
+        let punctuationRegex = try? NSRegularExpression(pattern: "([.!?])(\\w)", options: [])
+        normalized = punctuationRegex?.stringByReplacingMatches(
+            in: normalized,
+            options: [],
+            range: NSRange(normalized.startIndex..., in: normalized),
+            withTemplate: "$1 $2"
+        ) ?? normalized
+        
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+extension WordToken {
+    // Helper to check if a range intersects with another (useful for tap detection later)
+    func intersects(_ other: NSRange) -> Bool {
+        NSIntersectionRange(nsRange, other).length > 0
+    }
+}
