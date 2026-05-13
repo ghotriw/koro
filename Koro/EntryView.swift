@@ -239,6 +239,12 @@ struct EntryView: View {
         .sheet(isPresented: $isSharing) {
             ShareSheet(activityItems: exportItems)
         }
+        .onChange(of: entry.title) { _, _ in
+            entry.updatedAt = .now
+        }
+        .onChange(of: entry.body) { _, _ in
+            entry.updatedAt = .now
+        }
     }
 
     private func generateAudio() {

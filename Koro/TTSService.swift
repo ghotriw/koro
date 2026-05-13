@@ -279,6 +279,7 @@ self.isReady = true
 
         // Update entry
         entry.audioFileURL = finalAudioURL
+        entry.updatedAt = .now
         let encoder = JSONEncoder()
         if let encodedTokens = try? encoder.encode(allWordTokens) {
             entry.tokens = encodedTokens

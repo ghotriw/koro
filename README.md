@@ -1,6 +1,6 @@
 # 📚 Koro: iOS Transcript Player
 
-## 📦 Assets Setup
+## Assets Setup
 
 The core TTS model is too large to be stored in the repository. You can set it up automatically using the provided script:
 

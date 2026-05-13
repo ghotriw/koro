@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import UniformTypeIdentifiers
 
 enum DisplayMode: String, CaseIterable {
     case list = "list"
@@ -52,6 +53,7 @@ struct LibraryView: View {
                 FolderEditView(folder: folder) { name, icon, imageName in
                     folder.name = name
                     folder.iconName = icon
+                    folder.updatedAt = .now
                     if let imageName {
                         // Delete old image if it exists and is different
                         if let old = folder.coverImageName, old != imageName {
@@ -366,8 +368,17 @@ struct FolderEditView: View {
 
 struct LibrarySettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @AppStorage("libraryDisplayMode") private var libraryDisplayMode: DisplayMode = .grid
     @AppStorage("entryDisplayMode") private var entryDisplayMode: DisplayMode = .grid
+
+    @State private var isExporting = false
+    @State private var exportItems: [URL] = []
+    @State private var isSharing = false
+    
+    @State private var showingImporter = false
+    @State private var isImporting = false
+    @State private var actionError: String?
 
     var body: some View {
         NavigationStack {
@@ -387,6 +398,30 @@ struct LibrarySettingsView: View {
                         }
                     }
                 }
+                
+                Section(header: Text("Data Management")) {
+                    Button(action: exportBackup) {
+                        HStack {
+                            Label("Export Full Backup", systemImage: "square.and.arrow.up")
+                            Spacer()
+                            if isExporting {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isExporting || isImporting)
+                    
+                    Button(action: { showingImporter = true }) {
+                        HStack {
+                            Label("Import Full Backup", systemImage: "square.and.arrow.down")
+                            Spacer()
+                            if isImporting {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isExporting || isImporting)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -395,6 +430,65 @@ struct LibrarySettingsView: View {
                     Button("Done") {
                         dismiss()
                     }
+                }
+            }
+            .sheet(isPresented: $isSharing) {
+                ShareSheet(activityItems: exportItems)
+            }
+            .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.korobackup]) { result in
+                switch result {
+                case .success(let url):
+                    importBackup(from: url)
+                case .failure(let error):
+                    actionError = error.localizedDescription
+                }
+            }
+            .alert("Error", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                if let actionError {
+                    Text(actionError)
+                }
+            }
+        }
+    }
+    
+    private func exportBackup() {
+        isExporting = true
+        actionError = nil
+        
+        Task {
+            do {
+                let url = try await BackupManager.shared.createBackup(modelContext: modelContext)
+                await MainActor.run {
+                    self.exportItems = [url]
+                    self.isSharing = true
+                    self.isExporting = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.actionError = error.localizedDescription
+                    self.isExporting = false
+                }
+            }
+        }
+    }
+    
+    private func importBackup(from url: URL) {
+        isImporting = true
+        actionError = nil
+        
+        Task {
+            do {
+                try await BackupManager.shared.restoreBackup(from: url, modelContext: modelContext)
+                await MainActor.run {
+                    self.isImporting = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    self.actionError = error.localizedDescription
+                    self.isImporting = false
                 }
             }
         }
