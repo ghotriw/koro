@@ -28,7 +28,7 @@ enum SyncEngine {
         let sending = (inFlightSends[peerUUID] ?? 0) > 0
         
         if !receiving && !sending {
-            print("🏁 SyncEngine: All transfers complete for \(peerUUID). State -> .synced")
+            syncLog("🏁 SyncEngine: All transfers complete for \(peerUUID). State -> .synced")
             manager.setPeerState(peerUUID, .synced)
         }
     }
@@ -60,7 +60,7 @@ enum SyncEngine {
         context: ModelContext,
         manager: P2PManager
     ) {
-        print("🔄 SyncEngine: Starting merge with peer \(remotePeerUUID)")
+        syncLog("🔄 SyncEngine: Starting merge with peer \(remotePeerUUID)")
         let localFolders = (try? context.fetch(FetchDescriptor<Folder>())) ?? []
         let localEntries = (try? context.fetch(FetchDescriptor<Entry>())) ?? []
         let localTombstones = (try? context.fetch(FetchDescriptor<Tombstone>())) ?? []
@@ -135,14 +135,14 @@ enum SyncEngine {
 
         case let (l?, r?, _, _):
             if r.version > l.version {
-                print("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
+                syncLog("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
                 if hashesDisagree(localHash: l.coverHash, remoteHash: r.coverHash) {
                     // Peer will push cover proactively on their diff pass
                 }
             } else if l.version > r.version {
                 pushFolder(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             } else if r.updatedAt > l.updatedAt {
-                print("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
+                syncLog("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
             } else if l.updatedAt > r.updatedAt {
                 pushFolder(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
@@ -157,11 +157,11 @@ enum SyncEngine {
         case let (nil, r?, lt?, _):
             if r.version > lt.version {
                 context.delete(lt)
-                print("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
+                syncLog("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
             }
 
         case let (nil, r?, nil, _):
-            print("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
+            syncLog("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
 
         case let (l?, nil, _, nil):
             pushFolder(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
@@ -203,14 +203,14 @@ enum SyncEngine {
 
         case let (l?, r?, _, _):
             if r.version > l.version {
-                print("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
+                syncLog("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
                 if hashesDisagree(localHash: l.audioHash, remoteHash: r.audioHash) {
                     pendingEntryResources[id] = PendingEntry(record: r)
                 }
             } else if l.version > r.version {
                 pushEntry(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             } else if r.updatedAt > l.updatedAt {
-                print("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
+                syncLog("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
                 if hashesDisagree(localHash: l.audioHash, remoteHash: r.audioHash) {
                     pendingEntryResources[id] = PendingEntry(record: r)
                 }
@@ -230,13 +230,13 @@ enum SyncEngine {
             if r.version > lt.version {
                 context.delete(lt)
                 let folder = r.folderId.flatMap { localFolderMap[$0] }
-                print("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
+                syncLog("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
                 pendingEntryResources[id] = PendingEntry(record: r)
             }
 
         case let (nil, r?, nil, _):
             let folder = r.folderId.flatMap { localFolderMap[$0] }
-            print("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
+            syncLog("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
             pendingEntryResources[id] = PendingEntry(record: r)
 
         case let (l?, nil, _, nil):
@@ -290,10 +290,10 @@ enum SyncEngine {
         let resourceName = "cover:\(folder.id.uuidString)"
         
         incrementSend(for: peerUUID)
-        print("📤 SyncEngine: Sending cover resource \(resourceName)")
+        syncLog("📤 SyncEngine: Sending cover resource \(resourceName)")
         session.sendResource(at: coverURL, withName: resourceName, toPeer: peerID) { err in
             Task { @MainActor in
-                if let err = err { print("❌ SyncEngine: Send cover error: \(err)") }
+                if let err = err { syncLog("❌ SyncEngine: Send cover error: \(err)") }
                 decrementSend(for: peerUUID, manager: manager)
             }
         }
@@ -310,11 +310,11 @@ enum SyncEngine {
         let bodyName = "body:\(entry.id.uuidString)"
         
         incrementSend(for: peerUUID)
-        print("📤 SyncEngine: Sending body resource \(bodyName)")
+        syncLog("📤 SyncEngine: Sending body resource \(bodyName)")
         session.sendResource(at: bodyTempURL, withName: bodyName, toPeer: peerID) { err in
             Task { @MainActor in
                 try? fm.removeItem(at: bodyTempURL)
-                if let err = err { print("❌ SyncEngine: Send body error: \(err)") }
+                if let err = err { syncLog("❌ SyncEngine: Send body error: \(err)") }
                 decrementSend(for: peerUUID, manager: manager)
             }
         }
@@ -324,10 +324,10 @@ enum SyncEngine {
                 let resolvedAudio = docs.appendingPathComponent(audioURL.lastPathComponent)
                 if fm.fileExists(atPath: resolvedAudio.path) {
                     incrementSend(for: peerUUID)
-                    print("📤 SyncEngine: Sending audio resource audio:\(entry.id.uuidString)")
+                    syncLog("📤 SyncEngine: Sending audio resource audio:\(entry.id.uuidString)")
                     session.sendResource(at: resolvedAudio, withName: "audio:\(entry.id.uuidString)", toPeer: peerID) { err in
                         Task { @MainActor in
-                            if let err = err { print("❌ SyncEngine: Send audio error: \(err)") }
+                            if let err = err { syncLog("❌ SyncEngine: Send audio error: \(err)") }
                             decrementSend(for: peerUUID, manager: manager)
                         }
                     }
@@ -338,11 +338,11 @@ enum SyncEngine {
                 let tokensTempURL = fm.temporaryDirectory.appendingPathComponent("\(entry.id.uuidString)_tokens.json")
                 try? tokensData.write(to: tokensTempURL)
                 incrementSend(for: peerUUID)
-                print("📤 SyncEngine: Sending tokens resource tokens:\(entry.id.uuidString)")
+                syncLog("📤 SyncEngine: Sending tokens resource tokens:\(entry.id.uuidString)")
                 session.sendResource(at: tokensTempURL, withName: "tokens:\(entry.id.uuidString)", toPeer: peerID) { err in
                     Task { @MainActor in
                         try? fm.removeItem(at: tokensTempURL)
-                        if let err = err { print("❌ SyncEngine: Send tokens error: \(err)") }
+                        if let err = err { syncLog("❌ SyncEngine: Send tokens error: \(err)") }
                         decrementSend(for: peerUUID, manager: manager)
                     }
                 }
@@ -394,7 +394,7 @@ enum SyncEngine {
         guard parts.count == 2 else { return }
         let type = parts[0]
         let idStr = parts[1]
-        print("📥 SyncEngine: Received resource \(type) for ID \(idStr) from \(fromPeerUUID)")
+        syncLog("📥 SyncEngine: Received resource \(type) for ID \(idStr) from \(fromPeerUUID)")
 
         switch type {
         case "body":
@@ -436,8 +436,8 @@ enum SyncEngine {
 
     private static func flushIfComplete(entryId: UUID, context: ModelContext, manager: P2PManager, fromPeerUUID: UUID) {
         guard let pending = pendingEntryResources[entryId] else { return }
-        if !pending.isComplete { print("⏳ SyncEngine: Entry \(entryId) waiting for more resources..."); return }
-        print("✅ SyncEngine: Entry \(entryId) resources complete, flushing to DB")
+        if !pending.isComplete { syncLog("⏳ SyncEngine: Entry \(entryId) waiting for more resources..."); return }
+        syncLog("✅ SyncEngine: Entry \(entryId) resources complete, flushing to DB")
         let fm = FileManager.default
 
         let desc = FetchDescriptor<Entry>(predicate: #Predicate { $0.id == entryId })

@@ -4,6 +4,33 @@ import UIKit
 import SwiftData
 import Combine
 
+// MARK: - Sync Logging
+
+@MainActor
+final class SyncLogger: ObservableObject {
+    static let shared = SyncLogger()
+    @Published var logs: [String] = []
+    
+    func log(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        let formatted = "[\(timestamp)] \(message)"
+        print(formatted)
+        logs.append(formatted)
+    }
+    
+    func clear() {
+        logs.removeAll()
+    }
+}
+
+func syncLog(_ message: String) {
+    Task { @MainActor in
+        SyncLogger.shared.log(message)
+    }
+}
+
 // MARK: - Peer state
 
 enum PeerSyncState: Equatable {
@@ -96,7 +123,7 @@ final class P2PManager: NSObject, ObservableObject {
         browser.delegate = self
         browser.startBrowsingForPeers()
 
-        print("🔵 P2P started — own ID: \(P2PManager.ownPeerUUID)")
+        syncLog("🔵 P2P started — own ID: \(P2PManager.ownPeerUUID)")
     }
 
     func stop() {
@@ -148,11 +175,11 @@ extension P2PManager: MCSessionDelegate {
         Task { @MainActor in
             switch state {
             case .connected:
-                print("🟢 Connected: \(peerID.displayName)")
+                syncLog("🟢 Connected: \(peerID.displayName)")
                 sendHandshake(to: peerID)
 
             case .notConnected:
-                print("🔴 Disconnected: \(peerID.displayName)")
+                syncLog("🔴 Disconnected: \(peerID.displayName)")
                 if let uuid = peerUUIDs[peerID] {
                     peers.removeAll { $0.id == uuid }
                     peerUUIDs.removeValue(forKey: peerID)
@@ -184,7 +211,7 @@ extension P2PManager: MCSessionDelegate {
 
                 if !P2PManager.hasEverPaired {
                     P2PManager.hasEverPaired = true
-                    print("🤝 First pairing — tombstones enabled")
+                    syncLog("🤝 First pairing — tombstones enabled")
                 }
 
                 merge(remote: hello.manifest, remotePeerID: peerID, remotePeerUUID: uuid)
@@ -240,7 +267,7 @@ extension P2PManager: MCNearbyServiceAdvertiserDelegate {
     }
 
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        print("⚠️ Advertiser failed: \(error)")
+        syncLog("⚠️ Advertiser failed: \(error)")
     }
 }
 
@@ -264,7 +291,7 @@ extension P2PManager: MCNearbyServiceBrowserDelegate {
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        print("⚠️ Browser failed: \(error)")
+        syncLog("⚠️ Browser failed: \(error)")
     }
 }
 

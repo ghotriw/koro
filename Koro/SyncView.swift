@@ -6,6 +6,7 @@ struct SyncView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var manager = P2PManager.shared
     @State private var isActive = false
+    @ObservedObject private var logger = SyncLogger.shared
 
     var body: some View {
         NavigationStack {
@@ -51,12 +52,40 @@ struct SyncView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                
+                if !logger.logs.isEmpty {
+                    Section {
+                        ScrollView {
+                            Text(logger.logs.joined(separator: "\n"))
+                                .font(.caption2.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                        }
+                        .frame(height: 200)
+                    } header: {
+                        HStack {
+                            Text("Diagnostics Log")
+                            Spacer()
+                            Button("Copy") {
+                                UIPasteboard.general.string = logger.logs.joined(separator: "\n")
+                            }
+                            .font(.caption)
+                            .textCase(nil)
+                        }
+                    }
+                }
             }
             .navigationTitle("Sync")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if !logger.logs.isEmpty {
+                        Button("Clear") { logger.clear() }
+                    }
                 }
             }
             .onDisappear {
