@@ -20,13 +20,21 @@ struct KoroApp: App {
         let defaults = UserDefaults.standard
         let memoryLimitMB = defaults.object(forKey: "mlxMemoryLimit") as? Int ?? 900
         let cacheLimitMB = defaults.object(forKey: "mlxCacheLimit") as? Int ?? 50
-        
+
         GPU.set(cacheLimit: cacheLimitMB * 1024 * 1024)
         GPU.set(memoryLimit: memoryLimitMB * 1024 * 1024)
-        
+
         print("🚀 MLX configured: Memory Limit = \(memoryLimitMB)MB, Cache Limit = \(cacheLimitMB)MB")
+
+        // Print the documents directory path for easier debugging on Mac/Simulator
+        if let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path {
+            print("📂 DATA PATH: \(docsPath)")
+        }
+        if let appSupportPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path {
+            print("🗄️ DATABASE DIR: \(appSupportPath)")
+        }
     }
-    
+
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -10,6 +10,28 @@ enum SyncEngine {
 
     /// Tracks expected resources for an entry before atomic commit.
     private static var pendingEntryResources: [UUID: PendingEntry] = [:]
+    
+    /// Tracks outgoing file transfers.
+    private static var inFlightSends: [UUID: Int] = [:]
+
+    private static func incrementSend(for peerUUID: UUID) {
+        inFlightSends[peerUUID, default: 0] += 1
+    }
+
+    private static func decrementSend(for peerUUID: UUID, manager: P2PManager) {
+        inFlightSends[peerUUID, default: 0] -= 1
+        checkCompletion(for: peerUUID, manager: manager)
+    }
+
+    private static func checkCompletion(for peerUUID: UUID, manager: P2PManager) {
+        let receiving = pendingEntryResources.count > 0
+        let sending = (inFlightSends[peerUUID] ?? 0) > 0
+        
+        if !receiving && !sending {
+            print("🏁 SyncEngine: All transfers complete for \(peerUUID). State -> .synced")
+            manager.setPeerState(peerUUID, .synced)
+        }
+    }
 
     private struct PendingEntry {
         let record: SyncManifest.EntryRecord
@@ -38,6 +60,7 @@ enum SyncEngine {
         context: ModelContext,
         manager: P2PManager
     ) {
+        print("🔄 SyncEngine: Starting merge with peer \(remotePeerUUID)")
         let localFolders = (try? context.fetch(FetchDescriptor<Folder>())) ?? []
         let localEntries = (try? context.fetch(FetchDescriptor<Entry>())) ?? []
         let localTombstones = (try? context.fetch(FetchDescriptor<Tombstone>())) ?? []
@@ -66,7 +89,8 @@ enum SyncEngine {
                 local: localFolderMap[id], remote: remoteFolderMap[id],
                 localTomb: localTombstoneMap[id], remoteTomb: remoteTombstoneMap[id],
                 remotePeerID: remotePeerID, session: session, context: context,
-                localFolderMap: &localFolderMap
+                localFolderMap: &localFolderMap,
+                remotePeerUUID: remotePeerUUID, manager: manager
             )
         }
 
@@ -76,7 +100,8 @@ enum SyncEngine {
                 local: localEntryMap[id], remote: remoteEntryMap[id],
                 localTomb: localTombstoneMap[id], remoteTomb: remoteTombstoneMap[id],
                 remotePeerID: remotePeerID, session: session, context: context,
-                localFolderMap: localFolderMap
+                localFolderMap: localFolderMap,
+                remotePeerUUID: remotePeerUUID, manager: manager
             )
         }
 
@@ -93,8 +118,8 @@ enum SyncEngine {
             }
         }
 
-        manager.setPeerState(remotePeerUUID, .synced)
         try? context.save()
+        checkCompletion(for: remotePeerUUID, manager: manager)
     }
 
     // MARK: - Folder diff
@@ -103,42 +128,43 @@ enum SyncEngine {
         id: UUID, local: Folder?, remote: SyncManifest.FolderRecord?,
         localTomb: Tombstone?, remoteTomb: SyncManifest.TombstoneRecord?,
         remotePeerID: MCPeerID, session: MCSession, context: ModelContext,
-        localFolderMap: inout [UUID: Folder]
+        localFolderMap: inout [UUID: Folder],
+        remotePeerUUID: UUID, manager: P2PManager
     ) {
         switch (local, remote, localTomb, remoteTomb) {
 
         case let (l?, r?, _, _):
             if r.version > l.version {
-                applyFolderRecord(r, to: l)
+                print("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
                 if hashesDisagree(localHash: l.coverHash, remoteHash: r.coverHash) {
                     // Peer will push cover proactively on their diff pass
                 }
             } else if l.version > r.version {
-                pushFolder(l, remote: r, via: session, to: remotePeerID)
+                pushFolder(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             } else if r.updatedAt > l.updatedAt {
-                applyFolderRecord(r, to: l)
+                print("📁 SyncEngine: Updating folder \(l.name)"); applyFolderRecord(r, to: l)
             } else if l.updatedAt > r.updatedAt {
-                pushFolder(l, remote: r, via: session, to: remotePeerID)
+                pushFolder(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
 
         case let (l?, nil, _, rt?):
             if rt.version > l.version {
                 DeletionService.delete(l, in: context)
             } else {
-                pushFolder(l, remote: nil, via: session, to: remotePeerID)
+                pushFolder(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
 
         case let (nil, r?, lt?, _):
             if r.version > lt.version {
                 context.delete(lt)
-                insertFolder(r, context: context, localFolderMap: &localFolderMap)
+                print("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
             }
 
         case let (nil, r?, nil, _):
-            insertFolder(r, context: context, localFolderMap: &localFolderMap)
+            print("📁 SyncEngine: Inserting new folder \(r.name)"); insertFolder(r, context: context, localFolderMap: &localFolderMap)
 
         case let (l?, nil, _, nil):
-            pushFolder(l, remote: nil, via: session, to: remotePeerID)
+            pushFolder(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
 
         default:
             break
@@ -170,25 +196,26 @@ enum SyncEngine {
         id: UUID, local: Entry?, remote: SyncManifest.EntryRecord?,
         localTomb: Tombstone?, remoteTomb: SyncManifest.TombstoneRecord?,
         remotePeerID: MCPeerID, session: MCSession, context: ModelContext,
-        localFolderMap: [UUID: Folder]
+        localFolderMap: [UUID: Folder],
+        remotePeerUUID: UUID, manager: P2PManager
     ) {
         switch (local, remote, localTomb, remoteTomb) {
 
         case let (l?, r?, _, _):
             if r.version > l.version {
-                applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
+                print("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
                 if hashesDisagree(localHash: l.audioHash, remoteHash: r.audioHash) {
                     pendingEntryResources[id] = PendingEntry(record: r)
                 }
             } else if l.version > r.version {
-                pushEntry(l, remote: r, via: session, to: remotePeerID)
+                pushEntry(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             } else if r.updatedAt > l.updatedAt {
-                applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
+                print("📄 SyncEngine: Updating entry \(l.title)"); applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
                 if hashesDisagree(localHash: l.audioHash, remoteHash: r.audioHash) {
                     pendingEntryResources[id] = PendingEntry(record: r)
                 }
             } else if l.updatedAt > r.updatedAt {
-                pushEntry(l, remote: r, via: session, to: remotePeerID)
+                pushEntry(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
             mergeLastPosition(remote: r, local: l)
 
@@ -196,24 +223,24 @@ enum SyncEngine {
             if rt.version > l.version {
                 DeletionService.delete(l, in: context)
             } else {
-                pushEntry(l, remote: nil, via: session, to: remotePeerID)
+                pushEntry(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
 
         case let (nil, r?, lt?, _):
             if r.version > lt.version {
                 context.delete(lt)
                 let folder = r.folderId.flatMap { localFolderMap[$0] }
-                insertEntry(r, folder: folder, context: context)
+                print("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
                 pendingEntryResources[id] = PendingEntry(record: r)
             }
 
         case let (nil, r?, nil, _):
             let folder = r.folderId.flatMap { localFolderMap[$0] }
-            insertEntry(r, folder: folder, context: context)
+            print("📄 SyncEngine: Inserting new entry \(r.title)"); insertEntry(r, folder: folder, context: context)
             pendingEntryResources[id] = PendingEntry(record: r)
 
         case let (l?, nil, _, nil):
-            pushEntry(l, remote: nil, via: session, to: remotePeerID)
+            pushEntry(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
 
         default:
             break
@@ -253,7 +280,7 @@ enum SyncEngine {
 
     // MARK: - Push helpers (what WE send TO peer)
 
-    private static func pushFolder(_ folder: Folder, remote: SyncManifest.FolderRecord?, via session: MCSession, to peerID: MCPeerID) {
+    private static func pushFolder(_ folder: Folder, remote: SyncManifest.FolderRecord?, via session: MCSession, to peerID: MCPeerID, peerUUID: UUID, manager: P2PManager) {
         guard hashesDisagree(localHash: folder.coverHash, remoteHash: remote?.coverHash) else { return }
         guard let name = folder.coverImageName else { return }
         let fm = FileManager.default
@@ -261,10 +288,18 @@ enum SyncEngine {
         let coverURL = docs.appendingPathComponent("Covers/\(name)")
         guard fm.fileExists(atPath: coverURL.path) else { return }
         let resourceName = "cover:\(folder.id.uuidString)"
-        session.sendResource(at: coverURL, withName: resourceName, toPeer: peerID) { _ in }
+        
+        incrementSend(for: peerUUID)
+        print("📤 SyncEngine: Sending cover resource \(resourceName)")
+        session.sendResource(at: coverURL, withName: resourceName, toPeer: peerID) { err in
+            Task { @MainActor in
+                if let err = err { print("❌ SyncEngine: Send cover error: \(err)") }
+                decrementSend(for: peerUUID, manager: manager)
+            }
+        }
     }
 
-    private static func pushEntry(_ entry: Entry, remote: SyncManifest.EntryRecord?, via session: MCSession, to peerID: MCPeerID) {
+    private static func pushEntry(_ entry: Entry, remote: SyncManifest.EntryRecord?, via session: MCSession, to peerID: MCPeerID, peerUUID: UUID, manager: P2PManager) {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
@@ -273,23 +308,43 @@ enum SyncEngine {
         let bodyTempURL = fm.temporaryDirectory.appendingPathComponent("\(entry.id.uuidString)_body.txt")
         try? bodyData.write(to: bodyTempURL)
         let bodyName = "body:\(entry.id.uuidString)"
-        session.sendResource(at: bodyTempURL, withName: bodyName, toPeer: peerID) { _ in
-            try? fm.removeItem(at: bodyTempURL)
+        
+        incrementSend(for: peerUUID)
+        print("📤 SyncEngine: Sending body resource \(bodyName)")
+        session.sendResource(at: bodyTempURL, withName: bodyName, toPeer: peerID) { err in
+            Task { @MainActor in
+                try? fm.removeItem(at: bodyTempURL)
+                if let err = err { print("❌ SyncEngine: Send body error: \(err)") }
+                decrementSend(for: peerUUID, manager: manager)
+            }
         }
 
         if hashesDisagree(localHash: entry.audioHash, remoteHash: remote?.audioHash) {
             if let audioURL = entry.audioFileURL {
                 let resolvedAudio = docs.appendingPathComponent(audioURL.lastPathComponent)
                 if fm.fileExists(atPath: resolvedAudio.path) {
-                    session.sendResource(at: resolvedAudio, withName: "audio:\(entry.id.uuidString)", toPeer: peerID) { _ in }
+                    incrementSend(for: peerUUID)
+                    print("📤 SyncEngine: Sending audio resource audio:\(entry.id.uuidString)")
+                    session.sendResource(at: resolvedAudio, withName: "audio:\(entry.id.uuidString)", toPeer: peerID) { err in
+                        Task { @MainActor in
+                            if let err = err { print("❌ SyncEngine: Send audio error: \(err)") }
+                            decrementSend(for: peerUUID, manager: manager)
+                        }
+                    }
                 }
             }
 
             if let tokensData = entry.tokens {
                 let tokensTempURL = fm.temporaryDirectory.appendingPathComponent("\(entry.id.uuidString)_tokens.json")
                 try? tokensData.write(to: tokensTempURL)
-                session.sendResource(at: tokensTempURL, withName: "tokens:\(entry.id.uuidString)", toPeer: peerID) { _ in
-                    try? fm.removeItem(at: tokensTempURL)
+                incrementSend(for: peerUUID)
+                print("📤 SyncEngine: Sending tokens resource tokens:\(entry.id.uuidString)")
+                session.sendResource(at: tokensTempURL, withName: "tokens:\(entry.id.uuidString)", toPeer: peerID) { err in
+                    Task { @MainActor in
+                        try? fm.removeItem(at: tokensTempURL)
+                        if let err = err { print("❌ SyncEngine: Send tokens error: \(err)") }
+                        decrementSend(for: peerUUID, manager: manager)
+                    }
                 }
             }
         }
@@ -339,6 +394,7 @@ enum SyncEngine {
         guard parts.count == 2 else { return }
         let type = parts[0]
         let idStr = parts[1]
+        print("📥 SyncEngine: Received resource \(type) for ID \(idStr) from \(fromPeerUUID)")
 
         switch type {
         case "body":
@@ -379,7 +435,9 @@ enum SyncEngine {
     // MARK: - Atomic apply for entries
 
     private static func flushIfComplete(entryId: UUID, context: ModelContext, manager: P2PManager, fromPeerUUID: UUID) {
-        guard let pending = pendingEntryResources[entryId], pending.isComplete else { return }
+        guard let pending = pendingEntryResources[entryId] else { return }
+        if !pending.isComplete { print("⏳ SyncEngine: Entry \(entryId) waiting for more resources..."); return }
+        print("✅ SyncEngine: Entry \(entryId) resources complete, flushing to DB")
         let fm = FileManager.default
 
         let desc = FetchDescriptor<Entry>(predicate: #Predicate { $0.id == entryId })
@@ -404,7 +462,7 @@ enum SyncEngine {
 
         try? context.save()
         pendingEntryResources.removeValue(forKey: entryId)
-        manager.setPeerState(fromPeerUUID, .synced)
+        checkCompletion(for: fromPeerUUID, manager: manager)
     }
 
     private static func applyCover(folderId: UUID, tempURL: URL, context: ModelContext) {
@@ -431,9 +489,7 @@ enum SyncEngine {
     // MARK: - Helpers
 
     private static func hashesDisagree(localHash: String?, remoteHash: String?) -> Bool {
-        guard let r = remoteHash else { return false }
-        guard let l = localHash else { return true }
-        return l != r
+        return localHash != remoteHash
     }
 }
 
