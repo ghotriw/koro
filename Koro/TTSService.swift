@@ -1,5 +1,5 @@
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import KokoroSwift
 import MLX
 import SwiftData
@@ -8,8 +8,8 @@ import MLXUtilsLibrary
 
 @MainActor
 final class TTSService: ObservableObject {
-    private var kokoro: KokoroTTS?
-    private var voices: [String: MLXArray] = [:]
+    nonisolated(unsafe) private var kokoro: KokoroTTS?
+    nonisolated(unsafe) private var voices: [String: MLXArray] = [:]
     private var initializationTask: Task<Void, Never>?
 
     @Published var isGenerating = false
@@ -21,7 +21,7 @@ final class TTSService: ObservableObject {
 
     static let shared = TTSService()
 
-    struct VoiceInfo: Identifiable, Hashable {
+    struct VoiceInfo: Identifiable, Hashable, Codable {
         let id: String
         let name: String
         let flag: String
@@ -30,6 +30,12 @@ final class TTSService: ObservableObject {
         var displayName: String {
             "\(flag) \(genderEmoji) \(name)"
         }
+    }
+
+    // Helper struct for Swift 6 Concurrency to transport non-Sendable types
+    private struct InitializationResult: @unchecked Sendable {
+        let kokoro: KokoroTTS
+        let voices: [String: MLXArray]
     }
 
     private let voiceMap: [String: (name: String, flag: String, gender: String)] = [
@@ -107,54 +113,49 @@ final class TTSService: ObservableObject {
             return
         }
 
-        do {
-            let result = try await Task.detached(priority: .userInitiated) { () -> (KokoroTTS, [String: MLXArray]) in
-                print("📦 Loading model weights...")
-                let kokoro = KokoroTTS(modelPath: modelURL)
-                print("🗣️ Loading voices...")
-                let voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
-                return (kokoro, voices)
-            }.value
-// 4. Update state on MainActor
-self.kokoro = result.0
-self.voices = result.1
+        let result = await Task.detached(priority: .userInitiated) { () -> InitializationResult in
+            print("📦 Loading model weights...")
+            let kokoro = KokoroTTS(modelPath: modelURL)
+            print("🗣️ Loading voices...")
+            let voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
+            return InitializationResult(kokoro: kokoro, voices: voices)
+        }.value
 
-// Only generate availableVoices if they haven't been loaded yet
-if self.availableVoices.isEmpty {
-    let rawVoiceKeys = Array(result.1.keys)
-        .map { $0.replacingOccurrences(of: ".npy", with: "") }
+        // 4. Update state on MainActor
+        self.kokoro = result.kokoro
+        self.voices = result.voices
 
-    self.availableVoices = rawVoiceKeys.map { id in
-        if let mapped = voiceMap[id] {
-            return VoiceInfo(id: id, name: mapped.name, flag: mapped.flag, genderEmoji: mapped.gender)
-        } else {
-            // Fallback for unknown voices
-            let components = id.split(separator: "_")
-            let name = components.last?.capitalized ?? id
-            let flag = id.hasPrefix("a") ? "🇺🇸" : (id.hasPrefix("b") ? "🇬🇧" : "👤")
+        // Only generate availableVoices if they haven't been loaded yet
+        if self.availableVoices.isEmpty {
+            let rawVoiceKeys = Array(result.voices.keys)
+                .map { $0.replacingOccurrences(of: ".npy", with: "") }
 
-            // Detect gender from second character (f/m)
-            let genderEmoji: String
-            if id.count > 1 {
-                let genderChar = id[id.index(id.startIndex, offsetBy: 1)]
-                genderEmoji = genderChar == "f" ? "👩" : (genderChar == "m" ? "👨" : "👤")
-            } else {
-                genderEmoji = "👤"
-            }
+            self.availableVoices = rawVoiceKeys.map { id in
+                if let mapped = voiceMap[id] {
+                    return VoiceInfo(id: id, name: mapped.name, flag: mapped.flag, genderEmoji: mapped.gender)
+                } else {
+                    // Fallback for unknown voices
+                    let components = id.split(separator: "_")
+                    let name = components.last?.capitalized ?? id
+                    let flag = id.hasPrefix("a") ? "🇺🇸" : (id.hasPrefix("b") ? "🇬🇧" : "👤")
 
-            return VoiceInfo(id: id, name: String(name), flag: flag, genderEmoji: genderEmoji)
-        }
-    }.sorted { $0.name < $1.name }
-}
-self.isReady = true
+                    // Detect gender from second character (f/m)
+                    let genderEmoji: String
+                    if id.count > 1 {
+                        let genderChar = id[id.index(id.startIndex, offsetBy: 1)]
+                        genderEmoji = genderChar == "f" ? "👩" : (genderChar == "m" ? "👨" : "👤")
+                    } else {
+                        genderEmoji = "👤"
+                    }
 
-            print("✅ TTS Engine initialized with \(self.voices.count) voices")
-
-        } catch {
-            print("❌ Failed to initialize TTS Engine: \(error.localizedDescription)")
+                    return VoiceInfo(id: id, name: String(name), flag: flag, genderEmoji: genderEmoji)
+                }
+            }.sorted { $0.name < $1.name }
         }
 
+        self.isReady = true
         self.initializationTask = nil
+        print("✅ TTS Engine Ready with \(self.voices.count) voices.")
     }
 
     func generateAudio(for entry: Entry, voiceName: String, speed: Float) async throws {
@@ -169,7 +170,7 @@ self.isReady = true
         }
 
         let fullVoiceName = voiceName.hasSuffix(".npy") ? voiceName : "\(voiceName).npy"
-        guard let voice = voices[fullVoiceName] else {
+        guard let voiceArray = voices[fullVoiceName] else {
             print("❌ Voice \(voiceName) not found")
             return
         }
@@ -185,18 +186,18 @@ self.isReady = true
 
         // Detect language based on voice ID prefix
         // a = American (enUS), b = British (enGB)
-        let language: Language = fullVoiceName.hasPrefix("b") ? .enGB : .enUS
-        print("🌐 Using language: \(language == .enGB ? "British" : "American")")
+        let lang: Language = fullVoiceName.hasPrefix("b") ? .enGB : .enUS
+        print("🌐 Using language: \(lang == .enGB ? "British" : "American")")
 
         var allWordTokens: [WordToken] = []
-        var currentAudioTime: TimeInterval = 0
+        var currentAudioTime: Double = 0
         var searchStartIndex = rawText.startIndex
 
         // Prepare file for streaming
         let fileManager = FileManager.default
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
-        // Use a temporary CAF file for streaming (safe and simple)
+        // Use a temporary CAF file for streaming
         let tempAudioURL = documentsURL.appendingPathComponent("\(entry.persistentModelID.hashValue)_temp.caf")
         // Final compressed destination
         let finalAudioURL = documentsURL.appendingPathComponent("\(entry.persistentModelID.hashValue).m4a")
@@ -212,7 +213,7 @@ self.isReady = true
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
         // Process chunks in a background task
-        try await Task.detached(priority: .userInitiated) {
+        try await Task.detached(priority: .userInitiated) { [rawText, voiceArray, lang] in
             let audioFile = try AVAudioFile(forWriting: tempAudioURL, settings: format.settings)
 
             for (index, chunk) in chunks.enumerated() {
@@ -222,9 +223,8 @@ self.isReady = true
 
                 try autoreleasepool {
                     print("🔄 Starting chunk \(index + 1)/\(chunks.count) (length: \(chunk.count) chars)")
-                    print("📝 Normalized chunk text: [\(chunk)]")
+                    let (audio, mTokens) = try kokoro.generateAudio(voice: voiceArray, language: lang, text: chunk, speed: speed)
 
-                    let (audio, mTokens) = try kokoro.generateAudio(voice: voice, language: language, text: chunk, speed: speed)
                     // Write audio buffer immediately to disk
                     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(audio.count))!
                     buffer.frameLength = buffer.frameCapacity
@@ -239,12 +239,7 @@ self.isReady = true
                             let word = mToken.text
                             guard !word.isEmpty else { continue }
 
-                            // Log phonemes for debugging
-                            // if let phonemes = mToken.phonemes {
-                            //     print("DEBUG: Word '\(word)' -> Phonemes: [\(phonemes)]")
-                            // }
-
-                            if let range = rawText.range(of: word, range: searchStartIndex..<rawText.endIndex) {
+                            if let range = rawText.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: searchStartIndex..<rawText.endIndex) {
                                 let nsRange = NSRange(range, in: rawText)
                                 allWordTokens.append(WordToken(
                                     word: word,
@@ -259,7 +254,6 @@ self.isReady = true
                     currentAudioTime += Double(audio.count) / sampleRate
                 }
             }
-            // audioFile goes out of scope here and should be closed
         }.value
 
         // Check if temp file exists and has content
@@ -297,7 +291,7 @@ self.isReady = true
     }
 
     private func convertToM4A(inputURL: URL, outputURL: URL) async throws {
-        let asset = AVAsset(url: inputURL)
+        let asset = AVURLAsset(url: inputURL)
 
         guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw NSError(domain: "TTSService", code: 3, userInfo: [NSLocalizedDescriptionKey: "No audio track found"])
@@ -334,16 +328,21 @@ self.isReady = true
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
+        // Use nonisolated(unsafe) to silence warnings for capture in the @Sendable closure.
+        nonisolated(unsafe) let unsafeWriter = writer
+        nonisolated(unsafe) let unsafeWriterInput = writerInput
+        nonisolated(unsafe) let unsafeReaderOutput = readerOutput
+
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            writerInput.requestMediaDataWhenReady(on: DispatchQueue(label: "audio.convert")) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let buffer = readerOutput.copyNextSampleBuffer() {
-                        writerInput.append(buffer)
+            unsafeWriterInput.requestMediaDataWhenReady(on: DispatchQueue(label: "audio.convert")) {
+                while unsafeWriterInput.isReadyForMoreMediaData {
+                    if let buffer = unsafeReaderOutput.copyNextSampleBuffer() {
+                        unsafeWriterInput.append(buffer)
                     } else {
-                        writerInput.markAsFinished()
-                        writer.finishWriting {
-                            if writer.status == .failed {
-                                let error = writer.error ?? NSError(domain: "TTSService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Write failed"])
+                        unsafeWriterInput.markAsFinished()
+                        unsafeWriter.finishWriting {
+                            if unsafeWriter.status == .failed {
+                                let error = unsafeWriter.error ?? NSError(domain: "TTSService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Write failed"])
                                 print("❌ AVAssetWriter failed: \(error)")
                                 continuation.resume(throwing: error)
                             } else {
@@ -366,14 +365,9 @@ self.isReady = true
     private func scheduleUnload() {
         unloadTask?.cancel()
         unloadTask = Task {
-            do {
-                // Wait for 1 minute of inactivity
-                try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
-                if !Task.isCancelled {
-                    await unloadEngine()
-                }
-            } catch {
-                // Task cancelled
+            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000) // 1 minute
+            if !Task.isCancelled {
+                await unloadEngine()
             }
         }
     }
@@ -385,6 +379,7 @@ self.isReady = true
         kokoro = nil
         voices = [:]
         isReady = false
+        initializationTask = nil
         GPU.clearCache()
     }
 
@@ -444,7 +439,7 @@ self.isReady = true
         return chunks.isEmpty ? [text] : chunks
     }
 
-    private func saveAudio(samples: [Float], to url: URL) throws {
+    func saveAudio(samples: [Float], to url: URL) throws {
         let sampleRate = 24000.0
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
