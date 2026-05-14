@@ -213,7 +213,7 @@ final class TTSService: ObservableObject {
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
         // Process chunks in a background task
-        try await Task.detached(priority: .userInitiated) { [rawText, voiceArray, lang] in
+        try await Task.detached(priority: .userInitiated) { [rawText, voiceArray, lang, kokoro] in
             let audioFile = try AVAudioFile(forWriting: tempAudioURL, settings: format.settings)
 
             for (index, chunk) in chunks.enumerated() {
@@ -239,7 +239,7 @@ final class TTSService: ObservableObject {
                             let word = mToken.text
                             guard !word.isEmpty else { continue }
 
-                            if let range = rawText.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: searchStartIndex..<rawText.endIndex) {
+                            if let range = TTSService.findRange(for: word, in: rawText, startingAt: searchStartIndex) {
                                 let nsRange = NSRange(range, in: rawText)
                                 allWordTokens.append(WordToken(
                                     word: word,
@@ -288,6 +288,29 @@ final class TTSService: ObservableObject {
 
         // Start/Reset inactivity timer to unload weights after 2 minutes
         scheduleUnload()
+    }
+
+    nonisolated private static func findRange(for word: String, in text: String, startingAt index: String.Index) -> Range<String.Index>? {
+        // 1. Try direct match first (fastest)
+        if let range = text.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: index..<text.endIndex) {
+            return range
+        }
+
+        // 2. Try regex-based matching to account for smart quotes and hyphens
+        let escapedWord = NSRegularExpression.escapedPattern(for: word)
+        let pattern = escapedWord
+            .replacingOccurrences(of: "'", with: "['’‘]")
+            .replacingOccurrences(of: "\"", with: "[\"“”«»]")
+            .replacingOccurrences(of: " ", with: "[\\s\\-]")
+
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+            let searchRange = NSRange(index..<text.endIndex, in: text)
+            if let match = regex.firstMatch(in: text, options: [], range: searchRange) {
+                return Range(match.range, in: text)
+            }
+        }
+
+        return nil
     }
 
     private func convertToM4A(inputURL: URL, outputURL: URL) async throws {
