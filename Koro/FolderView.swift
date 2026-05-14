@@ -111,6 +111,13 @@ struct FolderView: View {
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button {
+                            UIPasteboard.general.string = "\(entry.title)\n\n\(entry.body)"
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        } label: {
+                            Label("Copy Text", systemImage: "doc.on.doc")
+                        }
+
+                        Button {
                             entryToEdit = entry
                         } label: {
                             Label("Edit", systemImage: "pencil")
@@ -161,6 +168,14 @@ struct FolderView: View {
                         Label("Edit", systemImage: "pencil")
                     }
                     .tint(.orange)
+
+                    Button {
+                        UIPasteboard.general.string = "\(entry.title)\n\n\(entry.body)"
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .tint(.blue)
                 }
             }
         }
