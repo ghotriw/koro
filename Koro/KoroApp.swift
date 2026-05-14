@@ -13,8 +13,14 @@ import MLX
 struct KoroApp: App {
     init() {
         // Configure MLX GPU limits to prevent iOS from killing the app due to OOM
-        GPU.set(cacheLimit: 50 * 1024 * 1024)   // 50 MB
-        GPU.set(memoryLimit: 900 * 1024 * 1024) // 900 MB
+        let defaults = UserDefaults.standard
+        let memoryLimitMB = defaults.object(forKey: "mlxMemoryLimit") as? Int ?? 900
+        let cacheLimitMB = defaults.object(forKey: "mlxCacheLimit") as? Int ?? 50
+        
+        GPU.set(cacheLimit: cacheLimitMB * 1024 * 1024)
+        GPU.set(memoryLimit: memoryLimitMB * 1024 * 1024)
+        
+        print("🚀 MLX configured: Memory Limit = \(memoryLimitMB)MB, Cache Limit = \(cacheLimitMB)MB")
     }
     
     var body: some Scene {

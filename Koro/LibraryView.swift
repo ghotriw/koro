@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 enum DisplayMode: String, CaseIterable {
     case list = "list"
     case grid = "grid"
-    
+
     var icon: String {
         switch self {
         case .list: return "list.bullet"
@@ -19,7 +19,7 @@ struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Folder.sortOrder, order: .forward) private var folders: [Folder]
     @AppStorage("libraryDisplayMode") private var displayMode: DisplayMode = .grid
-    
+
     @State private var showingAddFolder = false
     @State private var folderToDelete: Folder?
     @State private var showingDeleteConfirmation = false
@@ -129,7 +129,7 @@ struct LibraryView: View {
                         } label: {
                             Label("Edit", systemImage: "pencil")
                         }
-                        
+
                         Button(role: .destructive) {
                             folderToDelete = folder
                             showingDeleteConfirmation = true
@@ -160,7 +160,7 @@ struct LibraryView: View {
                                 .font(.title3)
                                 .frame(width: 32)
                         }
-                        
+
                         VStack(alignment: .leading) {
                             Text(folder.name)
                                 .font(.headline)
@@ -177,7 +177,7 @@ struct LibraryView: View {
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
-                    
+
                     Button {
                         folderToEdit = folder
                     } label: {
@@ -215,15 +215,15 @@ struct LibraryView: View {
             modelContext.delete(folder)
         }
     }
-    
+
     private func moveFolders(from source: IndexSet, to destination: Int) {
         var revisedFolders = folders
         revisedFolders.move(fromOffsets: source, toOffset: destination)
-        
+
         for reverseIndex in 0..<revisedFolders.count {
             revisedFolders[reverseIndex].sortOrder = reverseIndex
         }
-        
+
         try? modelContext.save()
     }
 }
@@ -236,23 +236,23 @@ struct FolderEditView: View {
     @State private var selectedItem: PhotosPickerItem?
     @State private var showingFileImporter = false
     @State private var coverImageName: String?
-    
+
     let onSave: (String, String, String?) -> Void
-    
+
     let icons = [
-        "folder.fill", "book.fill", "books.vertical.fill", 
-        "newspaper.fill", "doc.text.fill", "globe", 
+        "folder.fill", "book.fill", "books.vertical.fill",
+        "newspaper.fill", "doc.text.fill", "globe",
         "mic.fill", "antenna.radiowaves.left.and.right", "airpodspro",
         "graduationcap.fill", "briefcase.fill", "heart.fill"
     ]
-    
+
     init(folder: Folder? = nil, onSave: @escaping (String, String, String?) -> Void) {
         _name = State(initialValue: folder?.name ?? "")
         _selectedIcon = State(initialValue: folder?.iconName ?? "folder.fill")
         _coverImageName = State(initialValue: folder?.coverImageName)
         self.onSave = onSave
     }
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -270,12 +270,12 @@ struct FolderEditView: View {
                     }
                     .listRowBackground(Color.clear)
                     .padding(.vertical)
-                    
+
                     Menu {
                         PhotosPicker(selection: $selectedItem, matching: .images) {
                             Label("Choose from Photos", systemImage: "photo.on.rectangle")
                         }
-                        
+
                         Button {
                             showingFileImporter = true
                         } label: {
@@ -285,7 +285,7 @@ struct FolderEditView: View {
                         Label(coverImageName == nil ? "Set Cover Image" : "Change Cover Image", systemImage: "photo")
                             .frame(maxWidth: .infinity)
                     }
-                    
+
                     if coverImageName != nil {
                         Button(role: .destructive) {
                             if let name = coverImageName {
@@ -298,11 +298,11 @@ struct FolderEditView: View {
                         }
                     }
                 }
-                
+
                 Section("Folder Details") {
                     TextField("Name", text: $name)
                 }
-                
+
                 Section("Icon") {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 20) {
                         ForEach(icons, id: \.self) { icon in
@@ -338,7 +338,7 @@ struct FolderEditView: View {
                 case .success(let url):
                     guard url.startAccessingSecurityScopedResource() else { return }
                     defer { url.stopAccessingSecurityScopedResource() }
-                    
+
                     if let data = try? Data(contentsOf: url),
                        let image = UIImage(data: data) {
                         updateCoverImage(image)
@@ -357,7 +357,7 @@ struct FolderEditView: View {
             }
         }
     }
-    
+
     private func updateCoverImage(_ image: UIImage) {
         if let old = coverImageName {
             CoverImageManager.shared.deleteImage(named: old)
@@ -375,7 +375,7 @@ struct LibrarySettingsView: View {
     @State private var isExporting = false
     @State private var exportItems: [URL] = []
     @State private var isSharing = false
-    
+
     @State private var showingImporter = false
     @State private var isImporting = false
     @State private var actionError: String?
@@ -390,7 +390,7 @@ struct LibrarySettingsView: View {
                                 .tag(mode)
                         }
                     }
-                    
+
                     Picker("Entries View", selection: $entryDisplayMode) {
                         ForEach(DisplayMode.allCases, id: \.self) { mode in
                             Label(mode.rawValue.capitalized, systemImage: mode.icon)
@@ -398,7 +398,7 @@ struct LibrarySettingsView: View {
                         }
                     }
                 }
-                
+
                 Section(header: Text("Data Management")) {
                     Button(action: exportBackup) {
                         HStack {
@@ -410,7 +410,7 @@ struct LibrarySettingsView: View {
                         }
                     }
                     .disabled(isExporting || isImporting)
-                    
+
                     Button(action: { showingImporter = true }) {
                         HStack {
                             Label("Import Full Backup", systemImage: "square.and.arrow.down")
@@ -452,11 +452,11 @@ struct LibrarySettingsView: View {
             }
         }
     }
-    
+
     private func exportBackup() {
         isExporting = true
         actionError = nil
-        
+
         Task {
             do {
                 let url = try await BackupManager.shared.createBackup(modelContext: modelContext)
@@ -473,11 +473,11 @@ struct LibrarySettingsView: View {
             }
         }
     }
-    
+
     private func importBackup(from url: URL) {
         isImporting = true
         actionError = nil
-        
+
         Task {
             do {
                 try await BackupManager.shared.restoreBackup(from: url, modelContext: modelContext)

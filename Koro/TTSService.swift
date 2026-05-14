@@ -389,8 +389,12 @@ self.isReady = true
 
     private func splitIntoChunks(_ text: String, speed: Float) -> [String] {
         // Dynamic chunk size based on speed. Slower speed = longer audio = more memory.
-        let calculatedLimit = Int(400 * speed)
-        let effectiveLimit = min(450, max(100, calculatedLimit))
+        let baseSize = UserDefaults.standard.object(forKey: "ttsBaseChunkSize") as? Int ?? 400
+        let calculatedLimit = Int(Float(baseSize) * speed)
+        
+        // We cap the effective limit to a reasonable maximum to avoid exceeding the model's 510-token limit.
+        // 500 characters is a safe upper bound for most sentences.
+        let effectiveLimit = min(500, max(50, calculatedLimit))
 
         // Split by sentences OR newlines
         let pattern = "(?<=[.!?])\\s+|\\n+"

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import MLX
 
 struct EntryEditView: View {
     @Environment(\.modelContext) private var modelContext
@@ -47,8 +48,13 @@ struct EntryView: View {
     @State private var errorMessage: String?
 
     @State private var showingGenerationSheet = false
-    @State private var selectedVoice = "af_heart"
-    @State private var selectedSpeed: Float = 1.0
+    @AppStorage("lastSelectedVoice") private var selectedVoice = "af_heart"
+    @AppStorage("lastSelectedSpeed") private var selectedSpeed: Double = 1.0
+    
+    // TTS & Performance Settings
+    @AppStorage("ttsBaseChunkSize") private var ttsBaseChunkSize: Int = 400
+    @AppStorage("mlxMemoryLimit") private var mlxMemoryLimit: Int = 900
+    @AppStorage("mlxCacheLimit") private var mlxCacheLimit: Int = 50
 
     @State private var isSharing = false
     @State private var exportItems: [URL] = []
@@ -205,6 +211,61 @@ struct EntryView: View {
                     Section("Speed: \(String(format: "%.1f", selectedSpeed))x") {
                         Slider(value: $selectedSpeed, in: 0.5...2.0, step: 0.1)
                     }
+                    
+                    Section(header: Text("Advanced (TTS & Memory)"), footer: Text("Lower chunk size if you experience memory issues. Higher GPU limits improve speed but may cause crashes.")) {
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("Base Chunk Size")
+                                Spacer()
+                                Text("\(ttsBaseChunkSize) chars")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: Binding(get: {
+                                Double(ttsBaseChunkSize)
+                            }, set: {
+                                ttsBaseChunkSize = Int($0)
+                            }), in: 100...500, step: 10)
+                        }
+                        
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("GPU Memory")
+                                Spacer()
+                                Text("\(mlxMemoryLimit) MB")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: Binding(get: {
+                                Double(mlxMemoryLimit)
+                            }, set: {
+                                mlxMemoryLimit = Int($0)
+                                GPU.set(memoryLimit: mlxMemoryLimit * 1024 * 1024)
+                            }), in: 200...4000, step: 100)
+                        }
+                        
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("GPU Cache")
+                                Spacer()
+                                Text("\(mlxCacheLimit) MB")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: Binding(get: {
+                                Double(mlxCacheLimit)
+                            }, set: {
+                                mlxCacheLimit = Int($0)
+                                GPU.set(cacheLimit: mlxCacheLimit * 1024 * 1024)
+                            }), in: 10...500, step: 10)
+                        }
+                        
+                        Button("Reset to Defaults") {
+                            ttsBaseChunkSize = 400
+                            mlxMemoryLimit = 900
+                            mlxCacheLimit = 50
+                            GPU.set(memoryLimit: 900 * 1024 * 1024)
+                            GPU.set(cacheLimit: 50 * 1024 * 1024)
+                        }
+                        .foregroundColor(.red)
+                    }
                 }
                 .navigationTitle("Generation Settings")
                 .navigationBarTitleDisplayMode(.inline)
@@ -221,14 +282,15 @@ struct EntryView: View {
                     }
                 }
                 .onChange(of: ttsService.availableVoices) { oldValue, newValue in
-                    if selectedVoice == "af_heart" || !newValue.contains(where: { $0.id == selectedVoice }) {
+                    // Only auto-select if current selection is not in the new list AND we actually have voices
+                    if !newValue.isEmpty && !newValue.contains(where: { $0.id == selectedVoice }) {
                         if let first = newValue.first {
                             selectedVoice = first.id
                         }
                     }
                 }
                 .onAppear {
-                    // Default to first available voice if af_heart isn't found
+                    // Default only if current selection is missing and voices are loaded
                     if !ttsService.availableVoices.isEmpty && !ttsService.availableVoices.contains(where: { $0.id == selectedVoice }) {
                         selectedVoice = ttsService.availableVoices.first!.id
                     }
@@ -251,7 +313,7 @@ struct EntryView: View {
         errorMessage = nil
         Task {
             do {
-                try await ttsService.generateAudio(for: entry, voiceName: selectedVoice, speed: selectedSpeed)
+                try await ttsService.generateAudio(for: entry, voiceName: selectedVoice, speed: Float(selectedSpeed))
             } catch {
                 print("❌ UI: Generation failed: \(error)")
                 errorMessage = "Failed to generate audio: \(error.localizedDescription)"
