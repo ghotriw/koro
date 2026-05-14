@@ -195,6 +195,7 @@ struct FolderView: View {
 
         for index in 0..<revisedEntries.count {
             revisedEntries[index].sortOrder = index
+            revisedEntries[index].markAsUpdated()
         }
 
         try? modelContext.save()
@@ -287,7 +288,7 @@ struct FolderView: View {
 
     private func deleteEntry(_ entry: Entry) {
         withAnimation {
-            modelContext.delete(entry)
+            DeletionService.delete(entry, in: modelContext)
         }
     }
 }

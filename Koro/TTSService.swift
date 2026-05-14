@@ -274,11 +274,16 @@ final class TTSService: ObservableObject {
 
         // Update entry
         entry.audioFileURL = finalAudioURL
-        entry.updatedAt = .now
         let encoder = JSONEncoder()
         if let encodedTokens = try? encoder.encode(allWordTokens) {
             entry.tokens = encodedTokens
         }
+        // Sync metadata
+        entry.audioHash = (try? FileHashing.sha256(url: finalAudioURL))
+        if let attrs = try? fileManager.attributesOfItem(atPath: finalAudioURL.path) {
+            entry.fileSize = attrs[.size] as? Int64
+        }
+        entry.markAsUpdated()
 
         progress = 1.0
         isGenerating = false

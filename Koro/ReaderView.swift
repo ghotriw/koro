@@ -299,12 +299,12 @@ struct ReaderView: View {
         }
         .onDisappear {
             entry.lastPosition = viewModel.currentTime
-            entry.updatedAt = .now
+            entry.lastPositionUpdatedAt = .now
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 entry.lastPosition = viewModel.currentTime
-                entry.updatedAt = .now
+                entry.lastPositionUpdatedAt = .now
             }
         }
     }

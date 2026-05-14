@@ -303,10 +303,15 @@ struct EntryView: View {
             ShareSheet(activityItems: exportItems)
         }
         .onChange(of: entry.title) { _, _ in
-            entry.updatedAt = .now
+            entry.markAsUpdated()
         }
         .onChange(of: entry.body) { _, _ in
-            entry.updatedAt = .now
+            // Invalidate stale audio/tokens when body changes
+            entry.tokens = nil
+            entry.audioFileURL = nil
+            entry.audioHash = nil
+            entry.fileSize = nil
+            entry.markAsUpdated()
         }
     }
 

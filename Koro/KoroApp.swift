@@ -31,6 +31,6 @@ struct KoroApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Folder.self, Entry.self])
+        .modelContainer(for: [Folder.self, Entry.self, Tombstone.self])
     }
 }

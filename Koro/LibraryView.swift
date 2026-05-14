@@ -25,6 +25,7 @@ struct LibraryView: View {
     @State private var showingDeleteConfirmation = false
     @State private var folderToEdit: Folder?
     @State private var showingSettings = false
+    @State private var showingSync = false
 
     let columns = [
         GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20)
@@ -44,6 +45,9 @@ struct LibraryView: View {
                 LibrarySettingsView()
                     .presentationDetents([.medium, .large])
             }
+            .sheet(isPresented: $showingSync) {
+                SyncView()
+            }
             .sheet(isPresented: $showingAddFolder) {
                 FolderEditView { name, icon, imageName in
                     addFolder(name: name, icon: icon, imageName: imageName)
@@ -53,14 +57,16 @@ struct LibraryView: View {
                 FolderEditView(folder: folder) { name, icon, imageName in
                     folder.name = name
                     folder.iconName = icon
-                    folder.updatedAt = .now
                     if let imageName {
                         // Delete old image if it exists and is different
                         if let old = folder.coverImageName, old != imageName {
                             CoverImageManager.shared.deleteImage(named: old)
+                            folder.coverHash = nil
                         }
                         folder.coverImageName = imageName
+                        folder.coverHash = nil  // invalidate; backfill will recompute
                     }
+                    folder.markAsUpdated()
                 }
             }
             .alert("Delete Folder", isPresented: $showingDeleteConfirmation, presenting: folderToDelete) { folder in
@@ -76,6 +82,10 @@ struct LibraryView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack {
+                        Button(action: { showingSync = true }) {
+                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                        }
+
                         Button(action: { showingSettings = true }) {
                             Label("Settings", systemImage: "gear")
                         }
@@ -209,10 +219,7 @@ struct LibraryView: View {
 
     private func deleteFolder(_ folder: Folder) {
         withAnimation {
-            if let imageName = folder.coverImageName {
-                CoverImageManager.shared.deleteImage(named: imageName)
-            }
-            modelContext.delete(folder)
+            DeletionService.delete(folder, in: modelContext)
         }
     }
 
@@ -222,6 +229,7 @@ struct LibraryView: View {
 
         for reverseIndex in 0..<revisedFolders.count {
             revisedFolders[reverseIndex].sortOrder = reverseIndex
+            revisedFolders[reverseIndex].markAsUpdated()
         }
 
         try? modelContext.save()
