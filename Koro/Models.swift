@@ -31,6 +31,7 @@ final class Entry {
     var body: String
     var createdAt: Date
     var updatedAt: Date
+    var sortOrder: Int = 0
     var lastPosition: TimeInterval?
     var audioFileURL: URL?
     var tokens: Data?
@@ -38,12 +39,13 @@ final class Entry {
     @Relationship(inverse: \Folder.entries)
     var folder: Folder?
 
-    init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now, updatedAt: Date = .now, folder: Folder? = nil) {
+    init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now, updatedAt: Date = .now, sortOrder: Int = 0, folder: Folder? = nil) {
         self.id = id
         self.title = title
         self.body = body
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.sortOrder = sortOrder
         self.folder = folder
     }
 }

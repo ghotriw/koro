@@ -36,7 +36,8 @@ struct EntryEditView: View {
     }
 
     private func addEntry() {
-        let newEntry = Entry(title: title, body: bodyText, folder: folder)
+        let maxOrder = folder.entries.map { $0.sortOrder }.max() ?? -1
+        let newEntry = Entry(title: title, body: bodyText, sortOrder: maxOrder + 1, folder: folder)
         modelContext.insert(newEntry)
     }
 }

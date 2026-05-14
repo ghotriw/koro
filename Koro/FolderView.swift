@@ -18,6 +18,10 @@ struct FolderView: View {
     @State private var importError: String?
     @State private var isImporting = false
 
+    var sortedEntries: [Entry] {
+        folder.entries.sorted(by: { $0.sortOrder < $1.sortOrder })
+    }
+
     let columns = [
         GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20)
     ]
@@ -45,6 +49,10 @@ struct FolderView: View {
             Text("Are you sure you want to delete '\(entry.title)'? This action cannot be undone.")
         }
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                EditButton()
+            }
+
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack {
                     Button(action: { showingImporter = true }) {
@@ -93,7 +101,7 @@ struct FolderView: View {
     private var gridView: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 25) {
-                ForEach(folder.entries) { entry in
+                ForEach(sortedEntries) { entry in
                     NavigationLink {
                         if entry.audioFileURL != nil {
                             ReaderView(entry: entry)
@@ -137,7 +145,7 @@ struct FolderView: View {
 
     private var listView: some View {
         List {
-            ForEach(folder.entries) { entry in
+            ForEach(sortedEntries) { entry in
                 NavigationLink {
                     if entry.audioFileURL != nil {
                         ReaderView(entry: entry)
@@ -177,7 +185,19 @@ struct FolderView: View {
                     .tint(.blue)
                 }
             }
+            .onMove(perform: moveEntries)
         }
+    }
+
+    private func moveEntries(from source: IndexSet, to destination: Int) {
+        var revisedEntries = sortedEntries
+        revisedEntries.move(fromOffsets: source, toOffset: destination)
+
+        for index in 0..<revisedEntries.count {
+            revisedEntries[index].sortOrder = index
+        }
+
+        try? modelContext.save()
     }
 
     private func importZip(from url: URL) {
@@ -224,8 +244,9 @@ struct FolderView: View {
                 let textURL = contentDir.appendingPathComponent(textFile)
                 let body = try String(contentsOf: textURL, encoding: .utf8)
                 
-                // 5. Create Entry (we need to insert it to get a persistent ID if we want to use it for naming)
-                let newEntry = Entry(title: title, body: body, folder: folder)
+                // 5. Create Entry
+                let maxOrder = folder.entries.map { $0.sortOrder }.max() ?? -1
+                let newEntry = Entry(title: title, body: body, sortOrder: maxOrder + 1, folder: folder)
                 modelContext.insert(newEntry)
                 
                 // 6. Handle Tokens

@@ -72,6 +72,7 @@ class BackupManager {
                 "title": entry.title,
                 "createdAt": entry.createdAt.timeIntervalSince1970,
                 "updatedAt": entry.updatedAt.timeIntervalSince1970,
+                "sortOrder": entry.sortOrder,
                 "folderId": entry.folder?.id.uuidString ?? ""
             ]
             if let lastPos = entry.lastPosition {
@@ -242,6 +243,7 @@ class BackupManager {
             let folderIdString = item["folderId"] as? String ?? ""
             let folderId = UUID(uuidString: folderIdString)
             let lastPosition = item["lastPosition"] as? TimeInterval
+            let sortOrder = item["sortOrder"] as? Int ?? 0
             
             let targetFolder = folderId.flatMap { folderMap[$0] }
             
@@ -276,10 +278,11 @@ class BackupManager {
                     existing.updatedAt = updatedAt
                     existing.folder = targetFolder
                     existing.lastPosition = lastPosition
+                    existing.sortOrder = sortOrder
                     applyAssets(existing)
                 }
             } else {
-                let newEntry = Entry(id: id, title: title, body: body, createdAt: createdAt, updatedAt: updatedAt, folder: targetFolder)
+                let newEntry = Entry(id: id, title: title, body: body, createdAt: createdAt, updatedAt: updatedAt, sortOrder: sortOrder, folder: targetFolder)
                 newEntry.lastPosition = lastPosition
                 applyAssets(newEntry)
                 modelContext.insert(newEntry)
