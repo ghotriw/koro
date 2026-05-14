@@ -34,19 +34,17 @@ final class Entry {
     var lastPosition: TimeInterval?
     var audioFileURL: URL?
     var tokens: Data?
-    var coverImageData: Data?
-    
+
     @Relationship(inverse: \Folder.entries)
     var folder: Folder?
-    
-    init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now, updatedAt: Date = .now, folder: Folder? = nil, coverImageData: Data? = nil) {
+
+    init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now, updatedAt: Date = .now, folder: Folder? = nil) {
         self.id = id
         self.title = title
         self.body = body
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.folder = folder
-        self.coverImageData = coverImageData
     }
 }
 

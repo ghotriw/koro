@@ -3,26 +3,21 @@ import SwiftUI
 struct CoverView: View {
     let title: String
     let imageName: String?
-    let entryImageData: Data? // Keep for entries for now if used
     let size: CGFloat
     let isFolder: Bool
     let iconName: String?
-    
-    init(title: String, imageName: String? = nil, entryImageData: Data? = nil, size: CGFloat, isFolder: Bool, iconName: String? = nil) {
+
+    init(title: String, imageName: String? = nil, size: CGFloat, isFolder: Bool, iconName: String? = nil) {
         self.title = title
         self.imageName = imageName
-        self.entryImageData = entryImageData
         self.size = size
         self.isFolder = isFolder
         self.iconName = iconName
     }
-    
+
     private var uiImage: UIImage? {
         if let imageName, let url = CoverImageManager.shared.getURL(for: imageName) {
             return UIImage(contentsOfFile: url.path)
-        }
-        if let entryImageData {
-            return UIImage(data: entryImageData)
         }
         return nil
     }

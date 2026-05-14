@@ -101,13 +101,6 @@ class BackupManager {
                 }
             }
             
-            if let coverData = entry.coverImageData {
-                let coverName = "\(entry.id.uuidString).jpg"
-                let coverURL = coversDir.appendingPathComponent(coverName)
-                try? coverData.write(to: coverURL)
-                item["cover_image_filename"] = coverName
-            }
-            
             manifestItems.append(item)
         }
         
@@ -273,11 +266,6 @@ class BackupManager {
                         
                         entry.audioFileURL = destURL
                     }
-                }
-                
-                if let coverName = item["cover_image_filename"] as? String {
-                    let coverURL = contentDir.appendingPathComponent("covers").appendingPathComponent(coverName)
-                    entry.coverImageData = try? Data(contentsOf: coverURL)
                 }
             }
             

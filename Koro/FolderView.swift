@@ -103,7 +103,6 @@ struct FolderView: View {
                     } label: {
                         CoverView(
                             title: entry.title,
-                            entryImageData: entry.coverImageData,
                             size: 160,
                             isFolder: false
                         )
