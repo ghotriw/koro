@@ -65,6 +65,7 @@ final class Entry: Versionable {
     var version: Int64 = 0
     var observedVersion: Int64 = 0
     var audioHash: String?
+    var bodyHash: String?
     var fileSize: Int64?
     var lastPositionUpdatedAt: Date?
 

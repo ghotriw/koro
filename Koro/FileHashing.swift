@@ -3,6 +3,12 @@ import CryptoKit
 
 enum FileHashing {
     /// SHA-256 of a file, streamed in 1 MB chunks. Safe for large files. Nonisolated — pure I/O.
+    /// SHA-256 of a UTF-8 string. Cheap; safe on main actor for typical body sizes.
+    nonisolated static func sha256(string: String) -> String {
+        let data = Data(string.utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     nonisolated static func sha256(url: URL) throws -> String {
         let bufferSize = 1024 * 1024
         let stream = InputStream(url: url)!
@@ -37,6 +43,11 @@ enum FileHashing {
         struct FolderSnapshot {
             let objectID: ObjectIdentifier
             let coverURL: URL
+        }
+
+        // Body hash is cheap — fill in synchronously here on main actor
+        for e in entries where e.bodyHash == nil {
+            e.bodyHash = FileHashing.sha256(string: e.body)
         }
 
         let entrySnapshots: [EntrySnapshot] = entries.compactMap { e in

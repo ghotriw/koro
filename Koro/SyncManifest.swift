@@ -11,7 +11,9 @@ struct SyncManifest: Codable {
     struct FolderRecord: Codable {
         let id: UUID
         let name: String
+        let createdAt: Date
         let version: Int64
+        let observedVersion: Int64
         let updatedAt: Date
         let iconName: String
         let coverImageName: String?
@@ -23,11 +25,14 @@ struct SyncManifest: Codable {
         let id: UUID
         let folderId: UUID?
         let title: String
+        let createdAt: Date
         let version: Int64
+        let observedVersion: Int64
         let updatedAt: Date
         let sortOrder: Int
         let fileSize: Int64?
         let audioHash: String?
+        let bodyHash: String?
         let lastPosition: TimeInterval?
         let lastPositionUpdatedAt: Date?
     }
@@ -54,7 +59,9 @@ struct SyncManifest: Codable {
             FolderRecord(
                 id: f.id,
                 name: f.name,
+                createdAt: f.createdAt,
                 version: f.version,
+                observedVersion: f.observedVersion,
                 updatedAt: f.updatedAt,
                 iconName: f.iconName,
                 coverImageName: f.coverImageName,
@@ -68,11 +75,14 @@ struct SyncManifest: Codable {
                 id: e.id,
                 folderId: e.folder?.id,
                 title: e.title,
+                createdAt: e.createdAt,
                 version: e.version,
+                observedVersion: e.observedVersion,
                 updatedAt: e.updatedAt,
                 sortOrder: e.sortOrder,
                 fileSize: e.fileSize,
                 audioHash: e.audioHash,
+                bodyHash: e.bodyHash,
                 lastPosition: e.lastPosition,
                 lastPositionUpdatedAt: e.lastPositionUpdatedAt
             )

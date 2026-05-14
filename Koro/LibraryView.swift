@@ -505,7 +505,7 @@ struct LibrarySettingsView: View {
 
 #Preview {
     LibraryView()
-        .modelContainer(for: Folder.self, inMemory: true)
+        .modelContainer(for: [Folder.self, Entry.self, Tombstone.self], inMemory: true)
 }
 
 private extension UInt32 {

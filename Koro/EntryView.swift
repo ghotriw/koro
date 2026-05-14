@@ -306,11 +306,19 @@ struct EntryView: View {
             entry.markAsUpdated()
         }
         .onChange(of: entry.body) { _, _ in
-            // Invalidate stale audio/tokens when body changes
+            // Invalidate stale audio/tokens when body changes; remove the audio file from disk too
+            if let oldURL = entry.audioFileURL {
+                let fm = FileManager.default
+                let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let resolved = docs.appendingPathComponent(oldURL.lastPathComponent)
+                try? fm.removeItem(at: resolved)
+            }
             entry.tokens = nil
             entry.audioFileURL = nil
             entry.audioHash = nil
             entry.fileSize = nil
+            entry.lastPosition = nil
+            entry.bodyHash = FileHashing.sha256(string: entry.body)
             entry.markAsUpdated()
         }
     }

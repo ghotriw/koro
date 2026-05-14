@@ -198,7 +198,7 @@ extension P2PManager: MCSessionDelegate {
         Task { @MainActor in
             let decoder = JSONDecoder()
 
-            // Try HelloPayload first (first message after connect)
+            // HelloPayload — first message after connect, carries peerUUID + manifest
             if let hello = try? decoder.decode(HelloPayload.self, from: data) {
                 let uuid = hello.peerUUID
                 peerUUIDs[peerID] = uuid
@@ -216,14 +216,6 @@ extension P2PManager: MCSessionDelegate {
 
                 merge(remote: hello.manifest, remotePeerID: peerID, remotePeerUUID: uuid)
                 return
-            }
-
-            // Try WireMessage (tombstone signals, etc.)
-            if let msg = try? decoder.decode(WireMessage.self, from: data), let context = modelContext {
-                switch msg {
-                case .tombstone(let record):
-                    SyncEngine.handleTombstoneSignal(record, context: context)
-                }
             }
         }
     }

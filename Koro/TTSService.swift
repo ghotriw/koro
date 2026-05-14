@@ -278,12 +278,23 @@ final class TTSService: ObservableObject {
         if let encodedTokens = try? encoder.encode(allWordTokens) {
             entry.tokens = encodedTokens
         }
-        // Sync metadata
-        entry.audioHash = (try? FileHashing.sha256(url: finalAudioURL))
+        // Sync metadata. fileSize and bodyHash are cheap; audioHash is computed off-main.
         if let attrs = try? fileManager.attributesOfItem(atPath: finalAudioURL.path) {
             entry.fileSize = attrs[.size] as? Int64
         }
+        entry.bodyHash = FileHashing.sha256(string: entry.body)
         entry.markAsUpdated()
+
+        // Audio SHA-256 streams a large file — push to background to avoid blocking UI
+        let audioURLForHash = finalAudioURL
+        let entryID = entry.id
+        Task.detached(priority: .utility) {
+            guard let hash = try? FileHashing.sha256(url: audioURLForHash) else { return }
+            await MainActor.run {
+                entry.audioHash = hash
+                _ = entryID
+            }
+        }
 
         progress = 1.0
         isGenerating = false
