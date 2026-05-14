@@ -179,7 +179,7 @@ self.isReady = true
 
         let rawText = entry.body
         let text = normalizeText(rawText)
-        
+
         let chunks = splitIntoChunks(text, speed: speed)
         print("📝 Split text into \(chunks.count) chunks (speed: \(speed))")
 
@@ -222,6 +222,7 @@ self.isReady = true
 
                 try autoreleasepool {
                     print("🔄 Starting chunk \(index + 1)/\(chunks.count) (length: \(chunk.count) chars)")
+                    print("📝 Normalized chunk text: [\(chunk)]")
 
                     let (audio, mTokens) = try kokoro.generateAudio(voice: voice, language: language, text: chunk, speed: speed)
                     // Write audio buffer immediately to disk
@@ -237,11 +238,11 @@ self.isReady = true
                         for mToken in mTokens {
                             let word = mToken.text
                             guard !word.isEmpty else { continue }
-                            
+
                             // Log phonemes for debugging
-                            if let phonemes = mToken.phonemes {
-                                print("DEBUG: Word '\(word)' -> Phonemes: [\(phonemes)]")
-                            }
+                            // if let phonemes = mToken.phonemes {
+                            //     print("DEBUG: Word '\(word)' -> Phonemes: [\(phonemes)]")
+                            // }
 
                             if let range = rawText.range(of: word, range: searchStartIndex..<rawText.endIndex) {
                                 let nsRange = NSRange(range, in: rawText)
@@ -391,7 +392,7 @@ self.isReady = true
         // Dynamic chunk size based on speed. Slower speed = longer audio = more memory.
         let baseSize = UserDefaults.standard.object(forKey: "ttsBaseChunkSize") as? Int ?? 400
         let calculatedLimit = Int(Float(baseSize) * speed)
-        
+
         // We cap the effective limit to a reasonable maximum to avoid exceeding the model's 510-token limit.
         // 500 characters is a safe upper bound for most sentences.
         let effectiveLimit = min(500, max(50, calculatedLimit))
@@ -460,19 +461,18 @@ self.isReady = true
 
     private func normalizeText(_ text: String) -> String {
         var normalized = text
-        
+
         // 1. Replace smart quotes with straight ones
         let replacements = [
             "“": "\"", "”": "\"",
             "‘": "'", "’": "'",
-            "«": "\"", "»": "\"",
-            "—": "-", "–": "-" // EM Dash and EN Dash to hyphen
+            "«": "\"", "»": "\""
         ]
-        
+
         for (target, replacement) in replacements {
             normalized = normalized.replacingOccurrences(of: target, with: replacement)
         }
-        
+
         // 2. Ensure spacing after punctuation if it's followed by a letter
         let punctuationRegex = try? NSRegularExpression(pattern: "([.!?])(\\w)", options: [])
         normalized = punctuationRegex?.stringByReplacingMatches(
@@ -481,7 +481,17 @@ self.isReady = true
             range: NSRange(normalized.startIndex..., in: normalized),
             withTemplate: "$1 $2"
         ) ?? normalized
-        
+
+        // 3. Remove hyphens from compound words (e.g., "living-room" -> "living room") to improve TTS
+        let hyphenPattern = "(?<=\\p{L})-(?=\\p{L})"
+        let hyphenRegex = try? NSRegularExpression(pattern: hyphenPattern, options: [])
+        normalized = hyphenRegex?.stringByReplacingMatches(
+            in: normalized,
+            options: [],
+            range: NSRange(normalized.startIndex..., in: normalized),
+            withTemplate: " "
+        ) ?? normalized
+
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

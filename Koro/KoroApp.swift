@@ -12,6 +12,10 @@ import MLX
 @main
 struct KoroApp: App {
     init() {
+        // Suppress Metal JIT compiler warnings from MLX (e.g. "unused variable")
+        setenv("MTL_COMPILER_FLAGS", "-w", 1)
+        setenv("MTL_IGNORE_WARNINGS", "1", 1)
+
         // Configure MLX GPU limits to prevent iOS from killing the app due to OOM
         let defaults = UserDefaults.standard
         let memoryLimitMB = defaults.object(forKey: "mlxMemoryLimit") as? Int ?? 900
