@@ -421,45 +421,48 @@ struct ReaderView: View {
     }
 
     private var playerBar: some View {
-        HStack {
-            Button(action: { showingPlayerSettings = true }) {
-                Image(systemName: "ellipsis")
-                    .font(.title2)
+        ZStack {
+            GlassEffectContainer {
+                HStack {
+                    Button(action: { showingPlayerSettings = true }) {
+                        Image(systemName: "ellipsis")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                    }
+                    .glassEffect(in: Circle())
+
+                    Spacer()
+
+                    HStack(spacing: 140) {
+                        Button(action: { viewModel.skip(by: -Double(skipSeconds)) }) {
+                            Image(systemName: "gobackward.\(skipSeconds)")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                        }
+                        Button(action: { viewModel.skip(by: Double(skipSeconds)) }) {
+                            Image(systemName: "goforward.\(skipSeconds)")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 28)
+                    .glassEffect(in: Capsule())
+
+                    Spacer()
+
+                    Color.clear.frame(width: 44, height: 44)
+                }
+                .padding(.horizontal, 16)
+            }
+
+            Button(action: viewModel.togglePlayback) {
+                Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 56))
                     .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
             }
-            .glassEffect(in: Circle())
-
-            Spacer()
-
-            HStack(spacing: 140) {
-                Button(action: { viewModel.skip(by: -Double(skipSeconds)) }) {
-                    Image(systemName: "gobackward.\(skipSeconds)")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
-                Button(action: { viewModel.skip(by: Double(skipSeconds)) }) {
-                    Image(systemName: "goforward.\(skipSeconds)")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
-            }
-            .padding(.vertical, 9)
-            .padding(.horizontal, 28)
-            .glassEffect(in: Capsule())
-            .overlay {
-                Button(action: viewModel.togglePlayback) {
-                    Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.white)
-                }
-            }
-
-            Spacer()
-
-            Color.clear.frame(width: 44, height: 44)
         }
-        .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
 
