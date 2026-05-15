@@ -11,6 +11,7 @@ struct FolderView: View {
     
     @State private var showingAddEntrySheet = false
     @State private var entryToEdit: Entry?
+    @State private var entryToOpen: Entry?
     @State private var entryToDelete: Entry?
     @State private var showingDeleteConfirmation = false
     
@@ -35,8 +36,8 @@ struct FolderView: View {
             }
         }
         .navigationTitle(folder.name)
-        .navigationDestination(item: $entryToEdit) { entry in
-            EntryView(entry: entry)
+        .navigationDestination(item: $entryToOpen) { entry in
+            ReaderView(entry: entry)
         }
         .alert("Delete Entry", isPresented: $showingDeleteConfirmation, presenting: entryToDelete) { entry in
             Button("Delete", role: .destructive) {
@@ -88,7 +89,14 @@ struct FolderView: View {
         }
         .sheet(isPresented: $showingAddEntrySheet) {
             NavigationStack {
-                EntryEditView(folder: folder)
+                EntryEditView(folder: folder) { newEntry in
+                    entryToOpen = newEntry
+                }
+            }
+        }
+        .sheet(item: $entryToEdit) { entry in
+            NavigationStack {
+                EntryEditView(entry: entry)
             }
         }
         .overlay {
@@ -103,11 +111,7 @@ struct FolderView: View {
             LazyVGrid(columns: columns, spacing: 25) {
                 ForEach(sortedEntries) { entry in
                     NavigationLink {
-                        if entry.audioFileURL != nil {
-                            ReaderView(entry: entry)
-                        } else {
-                            EntryView(entry: entry)
-                        }
+                        ReaderView(entry: entry)
                     } label: {
                         CoverView(
                             title: entry.title,
@@ -147,11 +151,7 @@ struct FolderView: View {
         List {
             ForEach(sortedEntries) { entry in
                 NavigationLink {
-                    if entry.audioFileURL != nil {
-                        ReaderView(entry: entry)
-                    } else {
-                        EntryView(entry: entry)
-                    }
+                    ReaderView(entry: entry)
                 } label: {
                     VStack(alignment: .leading) {
                         Text(entry.title)

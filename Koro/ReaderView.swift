@@ -3,6 +3,7 @@ import AVFoundation
 import SwiftData
 import MediaPlayer
 import Combine
+import MLX
 
 enum ReaderFontDesign: String, CaseIterable, Identifiable {
     case standard = "Standard"
@@ -245,15 +246,16 @@ class PlaybackViewModel: ObservableObject {
 
 struct ReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
-    let entry: Entry
+    @Bindable var entry: Entry
     @StateObject private var viewModel: PlaybackViewModel
+    @ObservedObject private var ttsService = TTSService.shared
 
     init(entry: Entry) {
         self.entry = entry
         _viewModel = StateObject(wrappedValue: PlaybackViewModel(entry: entry))
     }
 
-    // Settings persistence
+    // Reader appearance
     @AppStorage("readerFontSize") private var fontSize: Double = 20
     @AppStorage("readerLineSpacing") private var lineSpacing: Double = 1.2
     @AppStorage("readerFontDesign") private var fontDesign: ReaderFontDesign = .standard
@@ -262,7 +264,131 @@ struct ReaderView: View {
     @AppStorage("readerHighlightColor") private var highlightColor: HighlightColor = .yellow
     @State private var showingSettings = false
 
+    // Generation
+    @AppStorage("lastSelectedVoice") private var selectedVoice = "af_heart"
+    @AppStorage("lastSelectedSpeed") private var selectedSpeed: Double = 1.0
+    @AppStorage("ttsBaseChunkSize") private var ttsBaseChunkSize: Int = 400
+    @AppStorage("mlxMemoryLimit") private var mlxMemoryLimit: Int = 900
+    @AppStorage("mlxCacheLimit") private var mlxCacheLimit: Int = 50
+    @State private var showingGenerationSheet = false
+    @State private var errorMessage: String?
+
+    // Edit / share
+    @State private var showingEditSheet = false
+    @State private var isSharing = false
+    @State private var exportItems: [URL] = []
+    @State private var isExporting = false
+
+    private var hasAudio: Bool { entry.audioFileURL != nil }
+
     var body: some View {
+        Group {
+            if hasAudio {
+                readyContent
+            } else {
+                emptyContent
+            }
+        }
+        .background(theme.color)
+        .ignoresSafeArea(edges: hasAudio ? .all : [])
+        .navigationTitle(entry.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                HStack {
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "textformat.size")
+                    }
+
+                    Menu {
+                        Button {
+                            showingEditSheet = true
+                        } label: {
+                            Label("Edit Text", systemImage: "pencil")
+                        }
+
+                        if hasAudio {
+                            Button {
+                                showingGenerationSheet = true
+                            } label: {
+                                Label("Regenerate Audio", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(ttsService.isGenerating)
+
+                            Button {
+                                exportData()
+                            } label: {
+                                Label("Share…", systemImage: "square.and.arrow.up")
+                            }
+                            .disabled(isExporting)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+
+            if hasAudio {
+                ToolbarItem(placement: .bottomBar) {
+                    playerControls
+                }
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(fontSize: $fontSize, lineSpacing: $lineSpacing, fontDesign: $fontDesign, theme: $theme, textOpacity: $textOpacity, highlightColor: $highlightColor)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showingEditSheet) {
+            NavigationStack {
+                EntryEditView(entry: entry)
+            }
+        }
+        .sheet(isPresented: $showingGenerationSheet) {
+            generationSheet
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isSharing) {
+            ShareSheet(activityItems: exportItems)
+        }
+        .toolbarBackground(.regularMaterial, for: .bottomBar)
+        .toolbarBackground(hasAudio ? .visible : .hidden, for: .bottomBar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if ttsService.isGenerating {
+                generationProgress
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(.regularMaterial)
+            }
+        }
+        .onAppear {
+            if hasAudio {
+                viewModel.setupPlayer()
+            }
+        }
+        .onChange(of: entry.audioFileURL) { _, newValue in
+            if newValue != nil {
+                viewModel.loadTokens()
+                viewModel.setupPlayer()
+            }
+        }
+        .onDisappear {
+            if hasAudio {
+                entry.lastPosition = viewModel.currentTime
+                entry.lastPositionUpdatedAt = .now
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background, hasAudio {
+                entry.lastPosition = viewModel.currentTime
+                entry.lastPositionUpdatedAt = .now
+            }
+        }
+    }
+
+    // MARK: - Ready (text + player)
+
+    private var readyContent: some View {
         TranscriptTextView(
             text: entry.body,
             activeRange: viewModel.activeRange,
@@ -273,65 +399,308 @@ struct ReaderView: View {
             highlightColor: highlightColor,
             onWordTapped: viewModel.seekToWord
         )
-        .background(theme.color)
-        .ignoresSafeArea()
-        .navigationTitle(entry.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { showingSettings = true }) {
-                    Image(systemName: "textformat.size")
-                }
-            }
-
-            ToolbarItem(placement: .bottomBar) {
-                playerControls
-            }
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView(fontSize: $fontSize, lineSpacing: $lineSpacing, fontDesign: $fontDesign, theme: $theme, textOpacity: $textOpacity, highlightColor: $highlightColor)
-                .presentationDetents([.medium, .large])
-        }
-        .toolbarBackground(.regularMaterial, for: .bottomBar)
-        .toolbarBackground(.visible, for: .bottomBar)
-        .onAppear {
-            viewModel.setupPlayer()
-        }
-        .onDisappear {
-            entry.lastPosition = viewModel.currentTime
-            entry.lastPositionUpdatedAt = .now
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
-                entry.lastPosition = viewModel.currentTime
-                entry.lastPositionUpdatedAt = .now
-            }
-        }
     }
 
     private var playerControls: some View {
         HStack {
             Spacer()
-
             HStack(spacing: 50) {
                 Button(action: { viewModel.skip(by: -10) }) {
                     Image(systemName: "gobackward.10")
                         .font(.title2)
                 }
-
                 Button(action: viewModel.togglePlayback) {
                     Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 44))
                 }
-
                 Button(action: { viewModel.skip(by: 10) }) {
                     Image(systemName: "goforward.10")
                         .font(.title2)
                 }
             }
-
             Spacer()
         }
+    }
+
+    // MARK: - Empty / Generating
+
+    private var emptyContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ScrollView {
+                Text(entry.body)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding()
+            }
+            .background(Color.secondary.opacity(0.05))
+            .cornerRadius(12)
+
+            if !ttsService.isGenerating {
+                HStack {
+                    Spacer()
+                    Button {
+                        showingGenerationSheet = true
+                    } label: {
+                        Label("Generate Audio", systemImage: "waveform.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .disabled(entry.body.isEmpty)
+                    Spacer()
+                }
+            }
+
+            if let error = errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+                    .font(.caption)
+                    .textSelection(.enabled)
+            }
+
+            if isExporting {
+                HStack {
+                    ProgressView().padding(.trailing, 8)
+                    Text("Preparing archive…")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(12)
+            }
+        }
+        .padding()
+    }
+
+    private var generationProgress: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Generating Audio…", systemImage: "waveform")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                if let eta = ttsService.estimatedTimeRemaining {
+                    Text("\(formatTime(eta)) left")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
+                    Text("•")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text("\(Int(ttsService.progress * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+            ProgressView(value: ttsService.progress)
+                .progressViewStyle(.linear)
+                .tint(.accentColor)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Generation sheet
+
+    private var generationSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Voice") {
+                    Picker("Select Voice", selection: $selectedVoice) {
+                        if ttsService.availableVoices.isEmpty {
+                            Text("Loading voices…").tag("af_heart")
+                        } else {
+                            ForEach(ttsService.availableVoices) { voice in
+                                Text(voice.displayName).tag(voice.id)
+                            }
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Section("Speed: \(String(format: "%.1f", selectedSpeed))x") {
+                    Slider(value: $selectedSpeed, in: 0.5...2.0, step: 0.1)
+                }
+
+                Section(header: Text("Advanced (TTS & Memory)"),
+                        footer: Text("Lower chunk size if you experience memory issues. Higher GPU limits improve speed but may cause crashes.")) {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Base Chunk Size")
+                            Spacer()
+                            Text("\(ttsBaseChunkSize) chars").foregroundColor(.secondary)
+                        }
+                        Slider(value: Binding(get: { Double(ttsBaseChunkSize) },
+                                              set: { ttsBaseChunkSize = Int($0) }),
+                               in: 100...500, step: 10)
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("GPU Memory")
+                            Spacer()
+                            Text("\(mlxMemoryLimit) MB").foregroundColor(.secondary)
+                        }
+                        Slider(value: Binding(get: { Double(mlxMemoryLimit) },
+                                              set: {
+                                                  mlxMemoryLimit = Int($0)
+                                                  GPU.set(memoryLimit: mlxMemoryLimit * 1024 * 1024)
+                                              }),
+                               in: 200...4000, step: 100)
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("GPU Cache")
+                            Spacer()
+                            Text("\(mlxCacheLimit) MB").foregroundColor(.secondary)
+                        }
+                        Slider(value: Binding(get: { Double(mlxCacheLimit) },
+                                              set: {
+                                                  mlxCacheLimit = Int($0)
+                                                  GPU.set(cacheLimit: mlxCacheLimit * 1024 * 1024)
+                                              }),
+                               in: 10...500, step: 10)
+                    }
+                    Button("Reset to Defaults") {
+                        ttsBaseChunkSize = 400
+                        mlxMemoryLimit = 900
+                        mlxCacheLimit = 50
+                        GPU.set(memoryLimit: 900 * 1024 * 1024)
+                        GPU.set(cacheLimit: 50 * 1024 * 1024)
+                    }
+                    .foregroundColor(.red)
+                }
+            }
+            .navigationTitle("Generation Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingGenerationSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(ttsService.isReady ? "Start" : "Loading…") {
+                        showingGenerationSheet = false
+                        generateAudio()
+                    }
+                    .disabled(!ttsService.isReady)
+                }
+            }
+            .onChange(of: ttsService.availableVoices) { _, newValue in
+                if !newValue.isEmpty && !newValue.contains(where: { $0.id == selectedVoice }) {
+                    if let first = newValue.first { selectedVoice = first.id }
+                }
+            }
+            .onAppear {
+                Task { await ttsService.prepareEngine() }
+                if !ttsService.availableVoices.isEmpty &&
+                    !ttsService.availableVoices.contains(where: { $0.id == selectedVoice }) {
+                    selectedVoice = ttsService.availableVoices.first!.id
+                }
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func generateAudio() {
+        errorMessage = nil
+        Task {
+            do {
+                try await ttsService.generateAudio(for: entry,
+                                                   voiceName: selectedVoice,
+                                                   speed: Float(selectedSpeed))
+            } catch {
+                print("❌ UI: Generation failed: \(error)")
+                errorMessage = "Failed to generate audio: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportData() {
+        isExporting = true
+        errorMessage = nil
+
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let safeTitle = entry.title.components(separatedBy: CharacterSet.alphanumerics.inverted).joined(separator: "_")
+        let folderURL = tempDir.appendingPathComponent(safeTitle)
+        try? fm.createDirectory(at: folderURL, withIntermediateDirectories: true)
+
+        var exportedAudioFileName: String? = nil
+        if let savedURL = entry.audioFileURL {
+            let documentsURL = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let currentAudioURL = documentsURL.appendingPathComponent(savedURL.lastPathComponent)
+
+            if fm.fileExists(atPath: currentAudioURL.path) {
+                let ext = currentAudioURL.pathExtension
+                let audioName = "\(safeTitle).\(ext)"
+                exportedAudioFileName = audioName
+                let destAudio = folderURL.appendingPathComponent(audioName)
+                try? fm.copyItem(at: currentAudioURL, to: destAudio)
+            } else {
+                print("❌ Export: Audio file NOT found at: \(currentAudioURL.path)")
+            }
+        }
+
+        let textFileName = "\(safeTitle).txt"
+        let textURL = folderURL.appendingPathComponent(textFileName)
+        try? entry.body.write(to: textURL, atomically: true, encoding: .utf8)
+
+        var tokensFileName: String? = nil
+        if let tokensData = entry.tokens {
+            let name = "\(safeTitle)_tokens.json"
+            tokensFileName = name
+            let tokensURL = folderURL.appendingPathComponent(name)
+            try? tokensData.write(to: tokensURL)
+        }
+
+        let manifest: [String: Any] = [
+            "version": 1,
+            "title": entry.title,
+            "audio_filename": exportedAudioFileName ?? "",
+            "text_filename": textFileName,
+            "tokens_filename": tokensFileName ?? ""
+        ]
+        if let manifestData = try? JSONSerialization.data(withJSONObject: manifest, options: .prettyPrinted) {
+            let manifestURL = folderURL.appendingPathComponent("manifest.json")
+            try? manifestData.write(to: manifestURL)
+        }
+
+        let coordinator = NSFileCoordinator()
+        var coordinatorError: NSError?
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            coordinator.coordinate(readingItemAt: folderURL, options: .forUploading, error: &coordinatorError) { zipURL in
+                let finalZipURL = tempDir.appendingPathComponent("\(safeTitle).zip")
+                do {
+                    try fm.copyItem(at: zipURL, to: finalZipURL)
+                    DispatchQueue.main.async {
+                        self.exportItems = [finalZipURL]
+                        self.isExporting = false
+                        self.isSharing = true
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.isExporting = false
+                        self.errorMessage = "Failed to copy archive: \(error.localizedDescription)"
+                    }
+                }
+            }
+            if let error = coordinatorError {
+                DispatchQueue.main.async {
+                    self.isExporting = false
+                    self.errorMessage = "Failed to create archive: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: seconds) ?? ""
     }
 }
 

@@ -71,10 +71,8 @@ final class TTSService: ObservableObject {
     ]
 
     private init() {
-        // Start initial prep
-        Task {
-            await prepareEngine()
-        }
+        // Engine is loaded on demand via prepareEngine() — call sites
+        // (generation sheet onAppear, generateAudio()) trigger it explicitly.
     }
 
     func prepareEngine() async {
