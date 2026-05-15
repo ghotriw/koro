@@ -453,7 +453,11 @@ struct ReaderView: View {
 
                     Spacer()
 
-                    Color.clear.frame(width: 44, height: 44)
+                    Text(formatTimer(viewModel.currentTime))
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .glassEffect(in: Circle())
                 }
                 .padding(.horizontal, 16)
             }
@@ -746,6 +750,18 @@ struct ReaderView: View {
         formatter.allowedUnits = [.minute, .second]
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: seconds) ?? ""
+    }
+
+    private func formatTimer(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
     }
 }
 
