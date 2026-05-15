@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import UIKit
 @preconcurrency import AVFoundation
 import KokoroSwift
@@ -9,6 +10,8 @@ import MLXUtilsLibrary
 
 @MainActor
 final class TTSService: ObservableObject {
+    nonisolated static let log = Logger(subsystem: "com.koro.tts", category: "generation")
+
     nonisolated(unsafe) private var kokoro: KokoroTTS?
     nonisolated(unsafe) private var voices: [String: MLXArray] = [:]
     private var initializationTask: Task<Void, Never>?
@@ -101,22 +104,22 @@ final class TTSService: ObservableObject {
             return
         }
 
-        print("🚀 Starting TTS Engine initialization...")
+        Self.log.info("🚀 Starting TTS Engine initialization...")
 
         guard let modelURL = Bundle.main.url(forResource: "kokoro-v1_0", withExtension: "safetensors") else {
-            print("❌ Critical: kokoro-v1_0.safetensors not found in bundle.")
+            Self.log.error("❌ Critical: kokoro-v1_0.safetensors not found in bundle.")
             return
         }
 
         guard let voicesURL = Bundle.main.url(forResource: "voices", withExtension: "npz") else {
-            print("❌ Critical: voices.npz not found in bundle.")
+            Self.log.error("❌ Critical: voices.npz not found in bundle.")
             return
         }
 
         let result = await Task.detached(priority: .userInitiated) { () -> InitializationResult in
-            print("📦 Loading model weights...")
+            Self.log.info("📦 Loading model weights...")
             let kokoro = KokoroTTS(modelPath: modelURL)
-            print("🗣️ Loading voices...")
+            Self.log.info("🗣️ Loading voices...")
             let voices = NpyzReader.read(fileFromPath: voicesURL) ?? [:]
             return InitializationResult(kokoro: kokoro, voices: voices)
         }.value
@@ -155,7 +158,7 @@ final class TTSService: ObservableObject {
 
         self.isReady = true
         self.initializationTask = nil
-        print("✅ TTS Engine Ready with \(self.voices.count) voices.")
+        Self.log.info("✅ TTS Engine Ready with \(self.voices.count, privacy: .public) voices.")
     }
 
     func generateAudio(for entry: Entry, voiceName: String, speed: Float) async throws {
@@ -166,9 +169,9 @@ final class TTSService: ObservableObject {
                 bgTask = .invalid
             }
         }
-        
+
         UIApplication.shared.isIdleTimerDisabled = true
-        
+
         defer {
             UIApplication.shared.isIdleTimerDisabled = false
             if bgTask != .invalid {
@@ -183,13 +186,13 @@ final class TTSService: ObservableObject {
         }
 
         guard let kokoro = kokoro else {
-            print("❌ Cannot generate audio: Engine not initialized")
+            Self.log.error("❌ Cannot generate audio: Engine not initialized")
             return
         }
 
         let fullVoiceName = voiceName.hasSuffix(".npy") ? voiceName : "\(voiceName).npy"
         guard let voiceArray = voices[fullVoiceName] else {
-            print("❌ Voice \(voiceName) not found")
+            Self.log.error("❌ Voice \(voiceName, privacy: .public) not found")
             return
         }
 
@@ -201,7 +204,7 @@ final class TTSService: ObservableObject {
         let text = normalizeText(rawText)
 
         let chunks = splitIntoChunks(text, speed: speed)
-        print("📝 Split text into \(chunks.count) chunks (speed: \(speed))")
+        Self.log.info("📝 Split text into \(chunks.count, privacy: .public) chunks (speed: \(speed, privacy: .public))")
 
         let totalChars = text.count
         var charsDone = 0
@@ -210,7 +213,7 @@ final class TTSService: ObservableObject {
         // Detect language based on voice ID prefix
         // a = American (enUS), b = British (enGB)
         let lang: Language = fullVoiceName.hasPrefix("b") ? .enGB : .enUS
-        print("🌐 Using language: \(lang == .enGB ? "British" : "American")")
+        Self.log.info("🌐 Using language: \(lang == .enGB ? "British" : "American", privacy: .public)")
 
         var allWordTokens: [WordToken] = []
         var currentAudioTime: Double = 0
@@ -241,8 +244,14 @@ final class TTSService: ObservableObject {
 
             for (index, chunk) in chunks.enumerated() {
                 try autoreleasepool {
-                    print("🔄 Starting chunk \(index + 1)/\(chunks.count) (length: \(chunk.count) chars)")
+                    Self.log.info("🔄 Starting chunk \(index + 1, privacy: .public)/\(chunks.count, privacy: .public) (length: \(chunk.count, privacy: .public) chars)")
                     let (audio, mTokens) = try kokoro.generateAudio(voice: voiceArray, language: lang, text: chunk, speed: speed)
+                    if let mTokens {
+                        let phonemeTokenCount = mTokens.reduce(0) { $0 + ($1.phonemes?.count ?? 0) }
+                        let modelTokenCount = phonemeTokenCount + 2 // + BOS/EOS
+                        let charsPerToken = modelTokenCount > 0 ? Double(chunk.count) / Double(modelTokenCount) : 0
+                        Self.log.info("   🔢 Chunk \(index + 1, privacy: .public): \(modelTokenCount, privacy: .public) phoneme tokens, \(mTokens.count, privacy: .public) words, \(String(format: "%.2f", charsPerToken), privacy: .public) chars/token")
+                    }
 
                     // Write audio buffer immediately to disk
                     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(audio.count))!
@@ -296,14 +305,14 @@ final class TTSService: ObservableObject {
         // Check if temp file exists and has content
         if let attrs = try? fileManager.attributesOfItem(atPath: tempAudioURL.path),
            let size = attrs[.size] as? UInt64 {
-            print("📁 Temp CAF file size: \(size) bytes")
+            Self.log.info("📁 Temp CAF file size: \(size, privacy: .public) bytes")
             if size == 0 {
                 throw NSError(domain: "TTSService", code: 5, userInfo: [NSLocalizedDescriptionKey: "Temp audio file is empty"])
             }
         }
 
         // Convert temporary CAF to final M4A using AVAssetWriter for precise control
-        print("📦 Compressing audio to M4A (64kbps)...")
+        Self.log.info("📦 Compressing audio to M4A (64kbps)...")
         try await convertToM4A(inputURL: tempAudioURL, outputURL: finalAudioURL)
 
         // Clean up temp file
@@ -422,7 +431,7 @@ final class TTSService: ObservableObject {
                         unsafeWriter.finishWriting {
                             if unsafeWriter.status == .failed {
                                 let error = unsafeWriter.error ?? NSError(domain: "TTSService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Write failed"])
-                                print("❌ AVAssetWriter failed: \(error)")
+                                Self.log.error("❌ AVAssetWriter failed: \(error.localizedDescription, privacy: .public)")
                                 continuation.resume(throwing: error)
                             } else {
                                 continuation.resume()
@@ -436,7 +445,7 @@ final class TTSService: ObservableObject {
 
         if reader.status == .failed {
             let error = reader.error ?? NSError(domain: "TTSService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Read failed"])
-            print("❌ AVAssetReader failed: \(error)")
+            Self.log.error("❌ AVAssetReader failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
     }
@@ -454,7 +463,7 @@ final class TTSService: ObservableObject {
     func unloadEngine() async {
         guard isReady && !isGenerating else { return }
 
-        print("🧹 Inactivity timeout: Unloading TTS Engine to free memory...")
+        Self.log.info("🧹 Inactivity timeout: Unloading TTS Engine to free memory...")
         kokoro = nil
         voices = [:]
         isReady = false
@@ -464,7 +473,7 @@ final class TTSService: ObservableObject {
 
     private func splitIntoChunks(_ text: String, speed: Float) -> [String] {
         // Dynamic chunk size based on speed. Slower speed = longer audio = more memory.
-        let baseSize = UserDefaults.standard.object(forKey: "ttsBaseChunkSize") as? Int ?? 400
+        let baseSize = UserDefaults.standard.object(forKey: "ttsBaseChunkSize") as? Int ?? 300
         let calculatedLimit = Int(Float(baseSize) * speed)
 
         // We cap the effective limit to a reasonable maximum to avoid exceeding the model's 510-token limit.

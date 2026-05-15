@@ -280,7 +280,7 @@ struct ReaderView: View {
     // Generation
     @AppStorage("lastSelectedVoice") private var selectedVoice = "af_heart"
     @AppStorage("lastSelectedSpeed") private var selectedSpeed: Double = 1.0
-    @AppStorage("ttsBaseChunkSize") private var ttsBaseChunkSize: Int = 400
+    @AppStorage("ttsBaseChunkSize") private var ttsBaseChunkSize: Int = 300
     @AppStorage("mlxMemoryLimit") private var mlxMemoryLimit: Int = 900
     @AppStorage("mlxCacheLimit") private var mlxCacheLimit: Int = 50
     @State private var showingGenerationSheet = false
@@ -293,6 +293,13 @@ struct ReaderView: View {
     @State private var isExporting = false
 
     private var hasAudio: Bool { entry.audioFileURL != nil }
+
+    private var chunkEffectiveLabel: String {
+        let raw = Int(Double(ttsBaseChunkSize) * selectedSpeed)
+        let effectiveChars = min(500, max(50, raw))
+        let estTokens = Int(Double(effectiveChars) / 1.2)
+        return "Effective: ~\(effectiveChars) chars / ~\(estTokens) phoneme tokens\n(goldilocks 100-200, max 510)"
+    }
 
     var body: some View {
         Group {
@@ -573,7 +580,7 @@ struct ReaderView: View {
 
                 Section(header: Text("Advanced (TTS & Memory)"),
                         footer: Text("Lower chunk size if you experience memory issues. Higher GPU limits improve speed but may cause crashes.")) {
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("Base Chunk Size")
                             Spacer()
@@ -582,6 +589,9 @@ struct ReaderView: View {
                         Slider(value: Binding(get: { Double(ttsBaseChunkSize) },
                                               set: { ttsBaseChunkSize = Int($0) }),
                                in: 100...500, step: 10)
+                        Text(chunkEffectiveLabel)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
                     VStack(alignment: .leading) {
                         HStack {
@@ -610,7 +620,7 @@ struct ReaderView: View {
                                in: 10...500, step: 10)
                     }
                     Button("Reset to Defaults") {
-                        ttsBaseChunkSize = 400
+                        ttsBaseChunkSize = 300
                         mlxMemoryLimit = 900
                         mlxCacheLimit = 50
                         GPU.set(memoryLimit: 900 * 1024 * 1024)
