@@ -97,6 +97,17 @@ struct EntryView: View {
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                             Spacer()
+                            
+                            if let eta = ttsService.estimatedTimeRemaining {
+                                Text("\(formatTime(eta)) left")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                                
+                                Text("•")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
                             Text("\(Int(ttsService.progress * 100))%")
                                 .font(.caption.monospacedDigit())
                                 .foregroundColor(.secondary)
@@ -425,5 +436,12 @@ struct EntryView: View {
                 }
             }
         }
+    }
+
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.minute, .second]
+        formatter.unitsStyle = .abbreviated
+        return formatter.string(from: seconds) ?? ""
     }
 }

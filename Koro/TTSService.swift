@@ -16,6 +16,7 @@ final class TTSService: ObservableObject {
     @Published var isGenerating = false
     @Published var isReady = false
     @Published var progress: Float = 0.0
+    @Published var estimatedTimeRemaining: TimeInterval? = nil
     @Published var availableVoices: [VoiceInfo] = []
 
     private var unloadTask: Task<Void, Never>?
@@ -196,12 +197,17 @@ final class TTSService: ObservableObject {
 
         isGenerating = true
         progress = 0.0
+        estimatedTimeRemaining = nil
 
         let rawText = entry.body
         let text = normalizeText(rawText)
 
         let chunks = splitIntoChunks(text, speed: speed)
         print("📝 Split text into \(chunks.count) chunks (speed: \(speed))")
+
+        let totalChars = text.count
+        var charsDone = 0
+        let startTime = Date()
 
         // Detect language based on voice ID prefix
         // a = American (enUS), b = British (enGB)
@@ -236,10 +242,6 @@ final class TTSService: ObservableObject {
             let audioFile = try AVAudioFile(forWriting: tempAudioURL, settings: format.settings)
 
             for (index, chunk) in chunks.enumerated() {
-                await MainActor.run {
-                    self.progress = Float(index) / Float(chunks.count)
-                }
-
                 try autoreleasepool {
                     print("🔄 Starting chunk \(index + 1)/\(chunks.count) (length: \(chunk.count) chars)")
                     let (audio, mTokens) = try kokoro.generateAudio(voice: voiceArray, language: lang, text: chunk, speed: speed)
@@ -270,7 +272,25 @@ final class TTSService: ObservableObject {
                             }
                         }
                     }
+                    charsDone += chunk.count
                     currentAudioTime += Double(audio.count) / sampleRate
+                }
+
+                let timeElapsed = Date().timeIntervalSince(startTime)
+                let progressValue = totalChars > 0 ? Float(charsDone) / Float(totalChars) : 0
+                let remainingTime: TimeInterval?
+                if charsDone > 0, timeElapsed > 0, charsDone < totalChars {
+                    let charsPerSecond = Double(charsDone) / timeElapsed
+                    remainingTime = Double(totalChars - charsDone) / charsPerSecond
+                } else {
+                    remainingTime = nil
+                }
+
+                await MainActor.run {
+                    self.progress = progressValue
+                    if let remainingTime {
+                        self.estimatedTimeRemaining = remainingTime
+                    }
                 }
             }
         }.value
@@ -315,8 +335,11 @@ final class TTSService: ObservableObject {
             }
         }
 
-        progress = 1.0
-        isGenerating = false
+        await MainActor.run {
+            self.isGenerating = false
+            self.progress = 1.0
+            self.estimatedTimeRemaining = nil
+        }
 
         // Memory Optimization: Clear GPU cache immediately after generation
         GPU.clearCache()
