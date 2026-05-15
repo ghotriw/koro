@@ -57,15 +57,26 @@ struct LibraryView: View {
                 FolderEditView(folder: folder) { name, icon, imageName in
                     folder.name = name
                     folder.iconName = icon
+                    
                     if let imageName {
                         // Delete old image if it exists and is different
                         if let old = folder.coverImageName, old != imageName {
                             CoverImageManager.shared.deleteImage(named: old)
-                            folder.coverHash = nil
                         }
                         folder.coverImageName = imageName
-                        folder.coverHash = nil  // invalidate; backfill will recompute
+                        if let url = CoverImageManager.shared.getURL(for: imageName) {
+                            folder.coverHash = try? FileHashing.sha256(url: url)
+                        } else {
+                            folder.coverHash = nil
+                        }
+                    } else {
+                        if let old = folder.coverImageName {
+                            CoverImageManager.shared.deleteImage(named: old)
+                        }
+                        folder.coverImageName = nil
+                        folder.coverHash = nil
                     }
+                    
                     folder.markAsUpdated()
                 }
             }
@@ -213,6 +224,9 @@ struct LibraryView: View {
         withAnimation {
             let maxOrder = folders.map { $0.sortOrder }.max() ?? -1
             let newFolder = Folder(name: name, sortOrder: maxOrder + 1, coverImageName: imageName, iconName: icon)
+            if let imageName, let url = CoverImageManager.shared.getURL(for: imageName) {
+                newFolder.coverHash = try? FileHashing.sha256(url: url)
+            }
             modelContext.insert(newFolder)
         }
     }

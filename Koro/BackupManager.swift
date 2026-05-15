@@ -204,11 +204,18 @@ class BackupManager {
                     let coverURL = contentDir.appendingPathComponent("covers").appendingPathComponent(cName)
                     if fm.fileExists(atPath: coverURL.path), let uiImage = UIImage(contentsOfFile: coverURL.path) {
                         folder.coverImageName = CoverImageManager.shared.saveImage(uiImage)
+                        if let newName = folder.coverImageName, let savedURL = CoverImageManager.shared.getURL(for: newName) {
+                            folder.coverHash = try? FileHashing.sha256(url: savedURL)
+                        } else {
+                            folder.coverHash = nil
+                        }
                     } else {
                         folder.coverImageName = nil
+                        folder.coverHash = nil
                     }
                 } else {
                     folder.coverImageName = nil
+                    folder.coverHash = nil
                 }
             }
             

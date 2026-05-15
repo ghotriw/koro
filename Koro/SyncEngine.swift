@@ -11,6 +11,9 @@ enum SyncEngine {
     /// Staged incoming entries — DB is NOT mutated until `isComplete`.
     private static var pendingEntryResources: [UUID: PendingEntry] = [:]
 
+    /// Staged folder covers awaiting arrival.
+    private static var pendingFolderCovers: Set<UUID> = []
+
     /// Tracks outgoing file transfers per peer.
     private static var inFlightSends: [UUID: Int] = [:]
 
@@ -24,7 +27,7 @@ enum SyncEngine {
     }
 
     private static func checkCompletion(for peerUUID: UUID, manager: P2PManager) {
-        let receiving = pendingEntryResources.count > 0
+        let receiving = pendingEntryResources.count > 0 || pendingFolderCovers.count > 0
         let sending = (inFlightSends[peerUUID] ?? 0) > 0
         if !receiving && !sending {
             syncLog("🏁 SyncEngine: All transfers complete for \(peerUUID). State -> .synced")
@@ -154,7 +157,9 @@ enum SyncEngine {
         case let (l?, r?, _, _):
             if r.version > l.version || (r.version == l.version && r.updatedAt > l.updatedAt) {
                 syncLog("📁 SyncEngine: Updating folder \(l.name)")
-                applyFolderRecord(r, to: l, localCoverByHash: localCoverByHash)
+                if applyFolderRecord(r, to: l, localCoverByHash: localCoverByHash) {
+                    pendingFolderCovers.insert(id)
+                }
             } else if l.version > r.version || (l.version == r.version && l.updatedAt > r.updatedAt) {
                 pushFolder(l, remote: r, peerCoverHashes: peerCoverHashes,
                            via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
@@ -173,12 +178,16 @@ enum SyncEngine {
             if r.version > lt.version {
                 context.delete(lt)
                 syncLog("📁 SyncEngine: Inserting new folder \(r.name)")
-                insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash)
+                if insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash) {
+                    pendingFolderCovers.insert(id)
+                }
             }
 
         case let (nil, r?, nil, _):
             syncLog("📁 SyncEngine: Inserting new folder \(r.name)")
-            insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash)
+            if insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash) {
+                pendingFolderCovers.insert(id)
+            }
 
         case let (l?, nil, _, nil):
             pushFolder(l, remote: nil, peerCoverHashes: peerCoverHashes,
@@ -189,7 +198,7 @@ enum SyncEngine {
         }
     }
 
-    private static func applyFolderRecord(_ r: SyncManifest.FolderRecord, to l: Folder, localCoverByHash: [String: String]) {
+    private static func applyFolderRecord(_ r: SyncManifest.FolderRecord, to l: Folder, localCoverByHash: [String: String]) -> Bool {
         l.name = r.name
         l.iconName = r.iconName
         l.sortOrder = r.sortOrder
@@ -197,6 +206,7 @@ enum SyncEngine {
         l.observedVersion = max(r.observedVersion, r.version)
         l.updatedAt = r.updatedAt
 
+        var waitingForCover = false
         if let peerHash = r.coverHash {
             if l.coverHash != peerHash {
                 if let existingName = localCoverByHash[peerHash] {
@@ -204,8 +214,10 @@ enum SyncEngine {
                     duplicateCoverFile(fromName: existingName, toName: r.coverImageName)
                     l.coverImageName = r.coverImageName
                     l.coverHash = peerHash
+                } else {
+                    // peer will push the cover via sendResource → applyCover
+                    waitingForCover = true
                 }
-                // else: peer will push the cover via sendResource → applyCover
             }
         } else {
             // Peer dropped the cover
@@ -215,11 +227,12 @@ enum SyncEngine {
             l.coverImageName = nil
             l.coverHash = nil
         }
+        return waitingForCover
     }
 
     private static func insertFolder(_ r: SyncManifest.FolderRecord, context: ModelContext,
                                      localFolderMap: inout [UUID: Folder],
-                                     localCoverByHash: [String: String]) {
+                                     localCoverByHash: [String: String]) -> Bool {
         let f = Folder(
             id: r.id,
             name: r.name,
@@ -237,10 +250,15 @@ enum SyncEngine {
         // applyCover (sendResource). Setting it pointing to a non-existent file confuses SwiftUI:
         // the view renders a placeholder, and when the file later arrives applyCover writes the
         // same filename back, which SwiftData treats as a no-op change → no re-render until next launch.
+        var waitingForCover = false
         if let peerHash = r.coverHash, let existingName = localCoverByHash[peerHash] {
             duplicateCoverFile(fromName: existingName, toName: r.coverImageName)
             f.coverImageName = r.coverImageName
             f.coverHash = peerHash
+        } else if r.coverHash != nil {
+            f.coverImageName = nil
+            f.coverHash = nil
+            waitingForCover = true
         } else {
             f.coverImageName = nil
             f.coverHash = nil
@@ -248,6 +266,7 @@ enum SyncEngine {
 
         context.insert(f)
         localFolderMap[f.id] = f
+        return waitingForCover
     }
 
     private static func duplicateCoverFile(fromName: String, toName: String?) {
@@ -482,7 +501,7 @@ enum SyncEngine {
 
         case "cover":
             guard let folderId = UUID(uuidString: idStr) else { return }
-            applyCover(folderId: folderId, tempURL: tempURL, context: context)
+            applyCover(folderId: folderId, tempURL: tempURL, context: context, fromPeerUUID: fromPeerUUID, manager: manager)
 
         default:
             try? fm.removeItem(at: tempURL)
@@ -576,7 +595,7 @@ enum SyncEngine {
         checkCompletion(for: fromPeerUUID, manager: manager)
     }
 
-    private static func applyCover(folderId: UUID, tempURL: URL, context: ModelContext) {
+    private static func applyCover(folderId: UUID, tempURL: URL, context: ModelContext, fromPeerUUID: UUID, manager: P2PManager) {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let coversDir = docs.appendingPathComponent("Covers")
@@ -585,6 +604,8 @@ enum SyncEngine {
         let desc = FetchDescriptor<Folder>(predicate: #Predicate { $0.id == folderId })
         guard let folder = try? context.fetch(desc).first else {
             try? fm.removeItem(at: tempURL)
+            pendingFolderCovers.remove(folderId)
+            checkCompletion(for: fromPeerUUID, manager: manager)
             return
         }
 
@@ -595,6 +616,9 @@ enum SyncEngine {
         folder.coverImageName = fileName
         folder.coverHash = (try? FileHashing.sha256(url: destURL))
         try? context.save()
+        
+        pendingFolderCovers.remove(folderId)
+        checkCompletion(for: fromPeerUUID, manager: manager)
     }
 
     // MARK: - Helpers
