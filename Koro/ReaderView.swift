@@ -143,11 +143,19 @@ class PlaybackViewModel: ObservableObject {
         updateNowPlayingInfo()
     }
 
+    var playbackRate: Float = 1.0 {
+        didSet {
+            if isPlaying { player?.rate = playbackRate }
+            updateNowPlayingInfo()
+        }
+    }
+
     func togglePlayback() {
         if isPlaying {
             player?.pause()
         } else {
             player?.play()
+            player?.rate = playbackRate
         }
         isPlaying.toggle()
         updateNowPlayingInfo()
@@ -229,7 +237,7 @@ class PlaybackViewModel: ObservableObject {
         }
 
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
@@ -238,7 +246,7 @@ class PlaybackViewModel: ObservableObject {
         guard var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
 
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? Double(playbackRate) : 0.0
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
@@ -263,6 +271,11 @@ struct ReaderView: View {
     @AppStorage("readerTextOpacity") private var textOpacity: Double = 1.0
     @AppStorage("readerHighlightColor") private var highlightColor: HighlightColor = .yellow
     @State private var showingSettings = false
+
+    // Player settings
+    @AppStorage("playerPlaybackRate") private var playbackRate: Double = 1.0
+    @AppStorage("playerSkipSeconds") private var skipSeconds: Int = 10
+    @State private var showingPlayerSettings = false
 
     // Generation
     @AppStorage("lastSelectedVoice") private var selectedVoice = "af_heart"
@@ -345,6 +358,10 @@ struct ReaderView: View {
         .sheet(isPresented: $isSharing) {
             ShareSheet(activityItems: exportItems)
         }
+        .sheet(isPresented: $showingPlayerSettings) {
+            PlayerSettingsView(playbackRate: $playbackRate, skipSeconds: $skipSeconds)
+                .presentationDetents([.medium])
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if ttsService.isGenerating {
@@ -363,6 +380,10 @@ struct ReaderView: View {
             if hasAudio {
                 viewModel.setupPlayer()
             }
+            viewModel.playbackRate = Float(playbackRate)
+        }
+        .onChange(of: playbackRate) { _, newValue in
+            viewModel.playbackRate = Float(newValue)
         }
         .onChange(of: entry.audioFileURL) { _, newValue in
             if newValue != nil {
@@ -401,21 +422,30 @@ struct ReaderView: View {
 
     private var playerBar: some View {
         HStack {
+            Button(action: { showingPlayerSettings = true }) {
+                Image(systemName: "ellipsis")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+            }
+            .glassEffect(in: Circle())
+
             Spacer()
+
             HStack(spacing: 140) {
-                Button(action: { viewModel.skip(by: -10) }) {
-                    Image(systemName: "gobackward.10")
+                Button(action: { viewModel.skip(by: -Double(skipSeconds)) }) {
+                    Image(systemName: "gobackward.\(skipSeconds)")
                         .font(.title2)
                         .foregroundStyle(.white)
                 }
-                Button(action: { viewModel.skip(by: 10) }) {
-                    Image(systemName: "goforward.10")
+                Button(action: { viewModel.skip(by: Double(skipSeconds)) }) {
+                    Image(systemName: "goforward.\(skipSeconds)")
                         .font(.title2)
                         .foregroundStyle(.white)
                 }
             }
             .padding(.vertical, 9)
-            .padding(.horizontal, 36)
+            .padding(.horizontal, 28)
             .glassEffect(in: Capsule())
             .overlay {
                 Button(action: viewModel.togglePlayback) {
@@ -424,8 +454,12 @@ struct ReaderView: View {
                         .foregroundStyle(.white)
                 }
             }
+
             Spacer()
+
+            Color.clear.frame(width: 44, height: 44)
         }
+        .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
 
@@ -771,6 +805,46 @@ struct SettingsView: View {
             }
             .navigationTitle("Reader Settings")
             .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+struct PlayerSettingsView: View {
+    @Binding var playbackRate: Double
+    @Binding var skipSeconds: Int
+    @Environment(\.dismiss) private var dismiss
+
+    private let rates: [Double] = [0.7, 0.8, 0.9, 1.0, 1.25, 1.5, 1.75]
+    private let skipOptions: [Int] = [5, 10, 15, 30, 45, 60]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Playback Speed") {
+                    Picker("Speed", selection: $playbackRate) {
+                        ForEach(rates, id: \.self) { r in
+                            Text(String(format: "%g×", r)).tag(r)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("Skip Interval") {
+                    Picker("Seconds", selection: $skipSeconds) {
+                        ForEach(skipOptions, id: \.self) { s in
+                            Text("\(s)s").tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+            .navigationTitle("Player")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }
