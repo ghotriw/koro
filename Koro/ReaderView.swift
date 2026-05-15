@@ -328,11 +328,6 @@ struct ReaderView: View {
                 }
             }
 
-            if hasAudio {
-                ToolbarItem(placement: .bottomBar) {
-                    playerControls
-                }
-            }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(fontSize: $fontSize, lineSpacing: $lineSpacing, fontDesign: $fontDesign, theme: $theme, textOpacity: $textOpacity, highlightColor: $highlightColor)
@@ -350,15 +345,18 @@ struct ReaderView: View {
         .sheet(isPresented: $isSharing) {
             ShareSheet(activityItems: exportItems)
         }
-        .toolbarBackground(.regularMaterial, for: .bottomBar)
-        .toolbarBackground(hasAudio ? .visible : .hidden, for: .bottomBar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if ttsService.isGenerating {
-                generationProgress
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(.regularMaterial)
+            VStack(spacing: 0) {
+                if ttsService.isGenerating {
+                    generationProgress
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                        .background(.regularMaterial)
+                }
+                if hasAudio {
+                    playerBar
+                }
             }
         }
         .onAppear {
@@ -401,25 +399,34 @@ struct ReaderView: View {
         )
     }
 
-    private var playerControls: some View {
+    private var playerBar: some View {
         HStack {
             Spacer()
-            HStack(spacing: 50) {
+            HStack(spacing: 140) {
                 Button(action: { viewModel.skip(by: -10) }) {
                     Image(systemName: "gobackward.10")
                         .font(.title2)
-                }
-                Button(action: viewModel.togglePlayback) {
-                    Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 44))
+                        .foregroundStyle(.white)
                 }
                 Button(action: { viewModel.skip(by: 10) }) {
                     Image(systemName: "goforward.10")
                         .font(.title2)
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 36)
+            .glassEffect(in: Capsule())
+            .overlay {
+                Button(action: viewModel.togglePlayback) {
+                    Image(systemName: viewModel.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.white)
                 }
             }
             Spacer()
         }
+        .padding(.bottom, 8)
     }
 
     // MARK: - Empty / Generating
