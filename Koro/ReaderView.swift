@@ -363,18 +363,19 @@ struct ReaderView: View {
                 .presentationDetents([.medium])
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
+            VStack(spacing: 8) {
                 if ttsService.isGenerating {
                     generationProgress
-                        .padding(.horizontal)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity)
-                        .background(.regularMaterial)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassEffect(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .padding(.horizontal, 16)
                 }
                 if hasAudio {
                     playerBar
                 }
             }
+            .padding(.bottom, hasAudio ? 0 : 8)
         }
         .onAppear {
             if hasAudio {
@@ -522,19 +523,19 @@ struct ReaderView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("Generating Audio…", systemImage: "waveform")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundColor(.secondary)
                 Spacer()
                 if let eta = ttsService.estimatedTimeRemaining {
                     Text("\(formatTime(eta)) left")
-                        .font(.caption.monospacedDigit())
+                        .font(.footnote.monospacedDigit())
                         .foregroundColor(.secondary)
                     Text("•")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundColor(.secondary)
                 }
                 Text("\(Int(ttsService.progress * 100))%")
-                    .font(.caption.monospacedDigit())
+                    .font(.footnote.monospacedDigit())
                     .foregroundColor(.secondary)
             }
             ProgressView(value: ttsService.progress)
