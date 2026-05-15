@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 @preconcurrency import AVFoundation
 import KokoroSwift
 import MLX
@@ -159,6 +160,24 @@ final class TTSService: ObservableObject {
     }
 
     func generateAudio(for entry: Entry, voiceName: String, speed: Float) async throws {
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "KokoroTTSGeneration") {
+            if bgTask != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
+        
+        UIApplication.shared.isIdleTimerDisabled = true
+        
+        defer {
+            UIApplication.shared.isIdleTimerDisabled = false
+            if bgTask != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
+
         // Ensure engine is ready before starting
         if !isReady {
             await prepareEngine()
