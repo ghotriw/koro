@@ -68,6 +68,13 @@ enum SyncEngine {
         let localEntries = (try? context.fetch(FetchDescriptor<Entry>())) ?? []
         let localTombstones = (try? context.fetch(FetchDescriptor<Tombstone>())) ?? []
 
+        let remoteFolderTombs = remote.tombstones.filter { $0.entityType == "folder" }.count
+        let remoteEntryTombs = remote.tombstones.filter { $0.entityType == "entry" }.count
+        let localFolderTombs = localTombstones.filter { $0.entityType == "folder" }.count
+        let localEntryTombs = localTombstones.filter { $0.entityType == "entry" }.count
+        syncLog("📦 Remote manifest: folders=\(remote.folders.count) entries=\(remote.entries.count) tombstones(folder=\(remoteFolderTombs), entry=\(remoteEntryTombs))")
+        syncLog("📦 Local state:     folders=\(localFolders.count) entries=\(localEntries.count) tombstones(folder=\(localFolderTombs), entry=\(localEntryTombs))")
+
         var localFolderMap = Dictionary(uniqueKeysWithValues: localFolders.map { ($0.id, $0) })
         let localEntryMap = Dictionary(uniqueKeysWithValues: localEntries.map { ($0.id, $0) })
         let localTombstoneMap = Dictionary(uniqueKeysWithValues: localTombstones.map { ($0.id, $0) })
@@ -138,6 +145,10 @@ enum SyncEngine {
         }
 
         try? context.save()
+        let pendingEntries = pendingEntryResources.count
+        let pendingCovers = pendingFolderCovers.count
+        let outgoing = inFlightSends[remotePeerUUID] ?? 0
+        syncLog("🧾 SyncEngine: Merge done. pendingEntries=\(pendingEntries) pendingCovers=\(pendingCovers) outgoingSends=\(outgoing)")
         checkCompletion(for: remotePeerUUID, manager: manager)
     }
 
@@ -156,20 +167,24 @@ enum SyncEngine {
 
         case let (l?, r?, _, _):
             if r.version > l.version || (r.version == l.version && r.updatedAt > l.updatedAt) {
-                syncLog("📁 SyncEngine: Updating folder \(l.name)")
+                syncLog("📁 Folder \(id) [\(l.name)]: remote newer (v\(r.version) vs local v\(l.version)) → update")
                 if applyFolderRecord(r, to: l, localCoverByHash: localCoverByHash) {
                     pendingFolderCovers.insert(id)
                 }
             } else if l.version > r.version || (l.version == r.version && l.updatedAt > r.updatedAt) {
+                syncLog("📁 Folder \(id) [\(l.name)]: local newer (v\(l.version) vs remote v\(r.version)) → push")
                 pushFolder(l, remote: r, peerCoverHashes: peerCoverHashes,
                            via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
+            } else {
+                syncLog("📁 Folder \(id) [\(l.name)]: in sync (v\(l.version))")
             }
 
         case let (l?, nil, _, rt?):
             if rt.version > l.version {
-                syncLog("🗑️ SyncEngine: Deleting folder \(l.name) (remote tombstone v\(rt.version) > local v\(l.version))")
+                syncLog("🗑️ Folder \(id) [\(l.name)]: remote tombstone v\(rt.version) > local v\(l.version) → delete")
                 DeletionService.delete(l, in: context)
             } else {
+                syncLog("📁 Folder \(id) [\(l.name)]: local v\(l.version) ≥ remote tombstone v\(rt.version) → push (resurrect)")
                 pushFolder(l, remote: nil, peerCoverHashes: peerCoverHashes,
                            via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
@@ -177,23 +192,26 @@ enum SyncEngine {
         case let (nil, r?, lt?, _):
             if r.version > lt.version {
                 context.delete(lt)
-                syncLog("📁 SyncEngine: Inserting new folder \(r.name)")
+                syncLog("📁 Folder \(id) [\(r.name)]: remote v\(r.version) > local tombstone v\(lt.version) → insert (resurrect)")
                 if insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash) {
                     pendingFolderCovers.insert(id)
                 }
+            } else {
+                syncLog("⏭️ Folder \(id) [\(r.name)]: SKIPPED — local tombstone v\(lt.version) ≥ remote v\(r.version)")
             }
 
         case let (nil, r?, nil, _):
-            syncLog("📁 SyncEngine: Inserting new folder \(r.name)")
+            syncLog("📁 Folder \(id) [\(r.name)]: new remote → insert")
             if insertFolder(r, context: context, localFolderMap: &localFolderMap, localCoverByHash: localCoverByHash) {
                 pendingFolderCovers.insert(id)
             }
 
         case let (l?, nil, _, nil):
+            syncLog("📁 Folder \(id) [\(l.name)]: missing on remote, no tombstone → push")
             pushFolder(l, remote: nil, peerCoverHashes: peerCoverHashes,
                        via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
 
-        default:
+        case (nil, nil, _, _):
             break
         }
     }
@@ -294,34 +312,43 @@ enum SyncEngine {
 
         case let (l?, r?, _, _):
             if r.version > l.version || (r.version == l.version && r.updatedAt > l.updatedAt) {
-                syncLog("📄 SyncEngine: Diff update for entry \(l.title)")
+                syncLog("📄 Entry \(id) [\(l.title)]: remote newer (v\(r.version) vs local v\(l.version)) → stage update")
                 stageOrApplyUpdate(r, existing: l, localFolderMap: localFolderMap)
             } else if l.version > r.version || (l.version == r.version && l.updatedAt > r.updatedAt) {
+                syncLog("📄 Entry \(id) [\(l.title)]: local newer (v\(l.version) vs remote v\(r.version)) → push")
                 pushEntry(l, remote: r, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
+            } else {
+                syncLog("📄 Entry \(id) [\(l.title)]: in sync (v\(l.version))")
             }
             mergeLastPosition(remote: r, local: l)
 
         case let (l?, nil, _, rt?):
             if rt.version > l.version {
-                syncLog("🗑️ SyncEngine: Deleting entry \(l.title) (remote tombstone v\(rt.version) > local v\(l.version))")
+                syncLog("🗑️ Entry \(id) [\(l.title)]: remote tombstone v\(rt.version) > local v\(l.version) → delete")
                 DeletionService.delete(l, in: context)
             } else {
+                syncLog("📄 Entry \(id) [\(l.title)]: local v\(l.version) ≥ remote tombstone v\(rt.version) → push (resurrect)")
                 pushEntry(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
             }
 
         case let (nil, r?, lt?, _):
             if r.version > lt.version {
-                // Defer: tombstone removal & insertion happen in flushIfComplete
+                syncLog("📄 Entry \(id) [\(r.title)]: remote v\(r.version) > local tombstone v\(lt.version) → stage insert (resurrect)")
                 stageInsert(r)
+            } else {
+                syncLog("⏭️ Entry \(id) [\(r.title)]: SKIPPED — local tombstone v\(lt.version) ≥ remote v\(r.version)")
             }
 
         case let (nil, r?, nil, _):
+            syncLog("📄 Entry \(id) [\(r.title)]: new remote → stage insert")
             stageInsert(r)
 
         case let (l?, nil, _, nil):
+            syncLog("📄 Entry \(id) [\(l.title)]: missing on remote, no tombstone → push")
             pushEntry(l, remote: nil, via: session, to: remotePeerID, peerUUID: remotePeerUUID, manager: manager)
 
-        default:
+        case (nil, nil, _, _):
+            // Both sides absent or tombstone-only — handled in tombstone sync loop
             break
         }
     }
@@ -370,8 +397,11 @@ enum SyncEngine {
               let remoteLPAt = remote.lastPositionUpdatedAt else { return }
         let localLPAt = local.lastPositionUpdatedAt ?? .distantPast
         if remoteLPAt > localLPAt {
+            syncLog("⏱️ lastPosition \(local.id) [\(local.title)]: remote \(remoteLP) @\(remoteLPAt) > local @\(localLPAt) → apply")
             local.lastPosition = remoteLP
             local.lastPositionUpdatedAt = remoteLPAt
+        } else {
+            syncLog("⏱️ lastPosition \(local.id) [\(local.title)]: local @\(localLPAt) ≥ remote @\(remoteLPAt) → keep")
         }
     }
 
@@ -380,15 +410,27 @@ enum SyncEngine {
     private static func pushFolder(_ folder: Folder, remote: SyncManifest.FolderRecord?,
                                    peerCoverHashes: Set<String>,
                                    via session: MCSession, to peerID: MCPeerID, peerUUID: UUID, manager: P2PManager) {
-        guard hashesDisagree(localHash: folder.coverHash, remoteHash: remote?.coverHash) else { return }
-        guard let name = folder.coverImageName, let hash = folder.coverHash else { return }
+        guard hashesDisagree(localHash: folder.coverHash, remoteHash: remote?.coverHash) else {
+            syncLog("⏭️ pushFolder \(folder.id) [\(folder.name)]: cover hashes match — skip")
+            return
+        }
+        guard let name = folder.coverImageName, let hash = folder.coverHash else {
+            syncLog("⏭️ pushFolder \(folder.id) [\(folder.name)]: no local cover — skip")
+            return
+        }
         // Plan §4 step 3: skip push if peer already has any folder with same coverHash
-        if peerCoverHashes.contains(hash) { return }
+        if peerCoverHashes.contains(hash) {
+            syncLog("⏭️ pushFolder \(folder.id) [\(folder.name)]: peer already has cover hash — skip (dedup)")
+            return
+        }
 
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let coverURL = docs.appendingPathComponent("Covers/\(name)")
-        guard fm.fileExists(atPath: coverURL.path) else { return }
+        guard fm.fileExists(atPath: coverURL.path) else {
+            syncLog("⚠️ pushFolder \(folder.id) [\(folder.name)]: cover file missing on disk at \(coverURL.lastPathComponent)")
+            return
+        }
         let resourceName = "cover:\(folder.id.uuidString)"
 
         incrementSend(for: peerUUID)
@@ -406,8 +448,12 @@ enum SyncEngine {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
-        // Body — only push when peer's bodyHash doesn't match ours (plan §2: heavy data on demand)
-        let bodyNeeded = (entry.bodyHash != remote?.bodyHash)
+        // Body — push if peer is missing the entry entirely, or if hashes disagree.
+        // (Plan §2: heavy data on demand. nil-vs-nil "match" must not skip when peer is missing the entry.)
+        let bodyNeeded = (remote == nil) || (entry.bodyHash != remote?.bodyHash)
+        if !bodyNeeded {
+            syncLog("⏭️ pushEntry \(entry.id) [\(entry.title)]: body hash matches — skip body")
+        }
         if bodyNeeded {
             let bodyData = entry.body.data(using: .utf8) ?? Data()
             let bodyTempURL = fm.temporaryDirectory.appendingPathComponent("\(entry.id.uuidString)_body.txt")
@@ -425,9 +471,20 @@ enum SyncEngine {
             }
         }
 
-        if hashesDisagree(localHash: entry.audioHash, remoteHash: remote?.audioHash) {
+        // Audio/tokens — same correction: if peer is missing the entry, always push (don't be fooled by nil==nil).
+        let audioNeeded = (remote == nil) || hashesDisagree(localHash: entry.audioHash, remoteHash: remote?.audioHash)
+        if !audioNeeded {
+            syncLog("⏭️ pushEntry \(entry.id) [\(entry.title)]: audio hash matches — skip audio/tokens")
+        }
+        if audioNeeded {
+            if entry.audioFileURL == nil {
+                syncLog("⏭️ pushEntry \(entry.id) [\(entry.title)]: no local audio — skip audio/tokens")
+            }
             if let audioURL = entry.audioFileURL {
                 let resolvedAudio = docs.appendingPathComponent(audioURL.lastPathComponent)
+                if !fm.fileExists(atPath: resolvedAudio.path) {
+                    syncLog("⚠️ pushEntry \(entry.id) [\(entry.title)]: audio file missing on disk at \(resolvedAudio.lastPathComponent)")
+                }
                 if fm.fileExists(atPath: resolvedAudio.path) {
                     incrementSend(for: peerUUID)
                     syncLog("📤 SyncEngine: Sending audio resource audio:\(entry.id.uuidString)")

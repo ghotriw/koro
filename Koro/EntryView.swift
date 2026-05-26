@@ -69,6 +69,7 @@ struct EntryEditView: View {
         case .create(let folder, let onCreate):
             let maxOrder = folder.entries.map { $0.sortOrder }.max() ?? -1
             let newEntry = Entry(title: title, body: bodyText, sortOrder: maxOrder + 1, folder: folder)
+            newEntry.bodyHash = FileHashing.sha256(string: bodyText)
             modelContext.insert(newEntry)
             onCreate(newEntry)
 

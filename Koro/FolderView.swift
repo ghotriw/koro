@@ -248,8 +248,9 @@ struct FolderView: View {
                 // 5. Create Entry
                 let maxOrder = folder.entries.map { $0.sortOrder }.max() ?? -1
                 let newEntry = Entry(title: title, body: body, sortOrder: maxOrder + 1, folder: folder)
+                newEntry.bodyHash = FileHashing.sha256(string: body)
                 modelContext.insert(newEntry)
-                
+
                 // 6. Handle Tokens
                 if let tokensFile = manifest?["tokens_filename"] as? String, !tokensFile.isEmpty {
                     let tokensURL = contentDir.appendingPathComponent(tokensFile)
@@ -257,7 +258,7 @@ struct FolderView: View {
                         newEntry.tokens = try Data(contentsOf: tokensURL)
                     }
                 }
-                
+
                 // 7. Handle Audio
                 if let audioFile = manifest?["audio_filename"] as? String, !audioFile.isEmpty {
                     let audioURL = contentDir.appendingPathComponent(audioFile)
@@ -267,9 +268,13 @@ struct FolderView: View {
                         let ext = audioURL.pathExtension
                         let uniqueName = "\(UUID().uuidString).\(ext)"
                         let destinationURL = docsURL.appendingPathComponent(uniqueName)
-                        
+
                         try fm.copyItem(at: audioURL, to: destinationURL)
                         newEntry.audioFileURL = destinationURL
+                        newEntry.audioHash = try? FileHashing.sha256(url: destinationURL)
+                        if let attrs = try? fm.attributesOfItem(atPath: destinationURL.path) {
+                            newEntry.fileSize = attrs[.size] as? Int64
+                        }
                     }
                 }
                 

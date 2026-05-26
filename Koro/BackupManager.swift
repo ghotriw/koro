@@ -259,29 +259,34 @@ class BackupManager {
                     let tokensURL = contentDir.appendingPathComponent("tokens").appendingPathComponent(tokensName)
                     entry.tokens = try? Data(contentsOf: tokensURL)
                 }
-                
+
                 if let audioName = item["audio_filename"] as? String {
                     let audioURL = contentDir.appendingPathComponent("audio").appendingPathComponent(audioName)
                     if fm.fileExists(atPath: audioURL.path) {
                         let uniqueName = "\(UUID().uuidString).\(audioURL.pathExtension)"
                         let destURL = documentsURL.appendingPathComponent(uniqueName)
                         try? fm.copyItem(at: audioURL, to: destURL)
-                        
+
                         // Clean old audio if needed
                         if let oldAudio = entry.audioFileURL {
                             let oldDest = documentsURL.appendingPathComponent(oldAudio.lastPathComponent)
                             try? fm.removeItem(at: oldDest)
                         }
-                        
+
                         entry.audioFileURL = destURL
+                        entry.audioHash = try? FileHashing.sha256(url: destURL)
+                        if let attrs = try? fm.attributesOfItem(atPath: destURL.path) {
+                            entry.fileSize = attrs[.size] as? Int64
+                        }
                     }
                 }
             }
-            
+
             if let existing = entryMap[id] {
                 if updatedAt > existing.updatedAt {
                     existing.title = title
                     existing.body = body
+                    existing.bodyHash = FileHashing.sha256(string: body)
                     existing.updatedAt = updatedAt
                     existing.folder = targetFolder
                     existing.lastPosition = lastPosition
@@ -290,6 +295,7 @@ class BackupManager {
                 }
             } else {
                 let newEntry = Entry(id: id, title: title, body: body, createdAt: createdAt, updatedAt: updatedAt, sortOrder: sortOrder, folder: targetFolder)
+                newEntry.bodyHash = FileHashing.sha256(string: body)
                 newEntry.lastPosition = lastPosition
                 applyAssets(newEntry)
                 modelContext.insert(newEntry)

@@ -92,6 +92,10 @@ struct SyncManifest: Codable {
             TombstoneRecord(id: t.id, entityType: t.entityType, version: t.version, deletedAt: t.deletedAt)
         }
 
-        return SyncManifest(folders: folderRecords, entries: entryRecords, tombstones: tombstoneRecords)
+        let manifest = SyncManifest(folders: folderRecords, entries: entryRecords, tombstones: tombstoneRecords)
+        let folderTombs = tombstoneRecords.filter { $0.entityType == "folder" }.count
+        let entryTombs = tombstoneRecords.filter { $0.entityType == "entry" }.count
+        syncLog("📦 SyncManifest.build: folders=\(folderRecords.count) entries=\(entryRecords.count) tombstones(folder=\(folderTombs), entry=\(entryTombs))")
+        return manifest
     }
 }
