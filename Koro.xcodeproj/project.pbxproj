@@ -36,7 +36,6 @@
 		D307ACA52FB37CEC00851C23 /* Exceptions for "Koro" folder in "Koro" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Assets.xcassets,
 				Info.plist,
 			);
 			target = D33C21252FB30E77005B18F8 /* Koro */;
