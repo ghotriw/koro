@@ -201,7 +201,8 @@ final class TTSService: ObservableObject {
         estimatedTimeRemaining = nil
 
         let rawText = entry.body
-        let text = normalizeText(rawText)
+        let cleanText = MarkdownTextHelper.cleanText(from: rawText)
+        let text = normalizeText(cleanText)
 
         let chunks = splitIntoChunks(text, speed: speed)
         Self.log.info("📝 Split text into \(chunks.count, privacy: .public) chunks (speed: \(speed, privacy: .public))")
@@ -217,7 +218,7 @@ final class TTSService: ObservableObject {
 
         var allWordTokens: [WordToken] = []
         var currentAudioTime: Double = 0
-        var searchStartIndex = rawText.startIndex
+        var searchStartIndex = cleanText.startIndex
 
         // Prepare file for streaming
         let fileManager = FileManager.default
@@ -239,7 +240,7 @@ final class TTSService: ObservableObject {
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
         // Process chunks in a background task
-        try await Task.detached(priority: .userInitiated) { [rawText, voiceArray, lang, kokoro] in
+        try await Task.detached(priority: .userInitiated) { [cleanText, voiceArray, lang, kokoro] in
             let audioFile = try AVAudioFile(forWriting: tempAudioURL, settings: format.settings)
 
             for (index, chunk) in chunks.enumerated() {
@@ -267,8 +268,8 @@ final class TTSService: ObservableObject {
                             let word = mToken.text
                             guard !word.isEmpty else { continue }
 
-                            if let range = TTSService.findRange(for: word, in: rawText, startingAt: searchStartIndex) {
-                                let nsRange = NSRange(range, in: rawText)
+                            if let range = TTSService.findRange(for: word, in: cleanText, startingAt: searchStartIndex) {
+                                let nsRange = NSRange(range, in: cleanText)
                                 allWordTokens.append(WordToken(
                                     word: word,
                                     nsRange: nsRange,

@@ -483,7 +483,7 @@ struct ReaderView: View {
     private var emptyContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             ScrollView {
-                Text(entry.body)
+                Text(LocalizedStringKey(entry.body))
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -921,20 +921,13 @@ struct TranscriptTextView: UIViewRepresentable {
                               coordinator.lastText != text
 
         if settingsChanged {
-            let paragraphStyle = NSMutableParagraphStyle()
-            paragraphStyle.lineHeightMultiple = CGFloat(lineSpacing)
-
-            let baseFont = UIFont.systemFont(ofSize: CGFloat(fontSize))
-            let fontDescriptor = baseFont.fontDescriptor.withDesign(fontDesign.uiFontDesign) ?? baseFont.fontDescriptor
-            let finalFont = UIFont(descriptor: fontDescriptor, size: CGFloat(fontSize))
-
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: finalFont,
-                .foregroundColor: UIColor.label.withAlphaComponent(CGFloat(textOpacity)),
-                .paragraphStyle: paragraphStyle
-            ]
-
-            uiView.attributedText = NSAttributedString(string: text, attributes: attributes)
+            uiView.attributedText = MarkdownTextHelper.attributedString(
+                from: text,
+                fontSize: fontSize,
+                fontDesign: fontDesign,
+                lineSpacing: lineSpacing,
+                textOpacity: textOpacity
+            )
 
             coordinator.lastFontSize = fontSize
             coordinator.lastLineSpacing = lineSpacing
