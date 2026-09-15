@@ -481,17 +481,13 @@ struct LibrarySettingsView: View {
 
         Task {
             do {
-                let url = try await BackupManager.shared.createBackup(modelContext: modelContext)
-                await MainActor.run {
-                    self.exportItems = [url]
-                    self.isSharing = true
-                    self.isExporting = false
-                }
+                let url = try BackupManager.shared.createBackup(modelContext: modelContext)
+                self.exportItems = [url]
+                self.isSharing = true
+                self.isExporting = false
             } catch {
-                await MainActor.run {
-                    self.actionError = error.localizedDescription
-                    self.isExporting = false
-                }
+                self.actionError = error.localizedDescription
+                self.isExporting = false
             }
         }
     }

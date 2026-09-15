@@ -7,6 +7,7 @@ struct SyncView: View {
     @ObservedObject private var manager = P2PManager.shared
     @State private var isActive = false
     @ObservedObject private var logger = SyncLogger.shared
+    @ObservedObject private var netMonitor = NetworkMonitor.shared
 
     var body: some View {
         NavigationStack {
@@ -41,7 +42,7 @@ struct SyncView: View {
                     }
                 }
 
-                Section("About Sync") {
+                Section {
                     LabeledContent("Device ID") {
                         Text(P2PManager.ownPeerUUID.uuidString.prefix(8) + "…")
                             .foregroundStyle(.secondary)
@@ -50,6 +51,36 @@ struct SyncView: View {
                     LabeledContent("Ever Paired") {
                         Text(P2PManager.hasEverPaired ? "Yes" : "No")
                             .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Local Network") {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(netMonitor.isWiFi ? Color.green : (netMonitor.isConnected ? Color.orange : Color.red))
+                                .frame(width: 8, height: 8)
+                            if let ip = netMonitor.localIP {
+                                Text("\(netMonitor.interfaceName) (\(ip))")
+                            } else {
+                                Text(netMonitor.interfaceName)
+                            }
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Sync Mode") {
+                        Text(manager.estimatedTransport.displayName)
+                            .foregroundStyle(manager.estimatedTransport.isBluetooth ? .orange : .secondary)
+                    }
+                    if let speed = manager.lastTransferSpeed {
+                        LabeledContent("Transfer Speed") {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle: .file) + "/s")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("About Sync")
+                } footer: {
+                    if manager.estimatedTransport.isBluetooth {
+                        Text("⚠️ Low transfer speed detected. Sync appears to be running over Bluetooth instead of Wi-Fi. Ensure both devices are connected to the same Wi-Fi network and Local Network access is allowed in iOS Settings.")
+                            .foregroundStyle(.orange)
                     }
                 }
                 
@@ -88,6 +119,9 @@ struct SyncView: View {
                     }
                 }
             }
+            .onAppear {
+                netMonitor.refresh()
+            }
             .onDisappear {
                 manager.stop()
                 isActive = false
@@ -115,9 +149,9 @@ private struct PeerRow: View {
 
             Spacer()
 
-            if case .transferring(let progress) = peer.state {
-                CircularProgress(value: progress)
-                    .frame(width: 28, height: 28)
+            if case .transferring(let completed, let total) = peer.state, total > 0 {
+                CircularProgress(value: Double(completed) / Double(total))
+                    .frame(width: 32, height: 32)
             }
         }
         .padding(.vertical, 4)
@@ -148,7 +182,13 @@ private struct PeerRow: View {
         case .idle: return "Idle"
         case .connecting: return "Connecting…"
         case .exchangingManifest: return "Comparing libraries…"
-        case .transferring(let p): return "Transferring \(Int(p * 100))%"
+        case .transferring(let completed, let total):
+            let pct = total > 0 ? Int((Double(completed) / Double(total)) * 100) : 0
+            if total > 0 {
+                return "Syncing: \(completed) of \(total) items • \(pct)%"
+            } else {
+                return "Syncing…"
+            }
         case .synced: return "Up to date"
         case .failed(let msg): return "Error: \(msg)"
         }
@@ -161,12 +201,15 @@ private struct CircularProgress: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.secondary.opacity(0.3), lineWidth: 3)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 3)
             Circle()
-                .trim(from: 0, to: value)
+                .trim(from: 0, to: CGFloat(min(1.0, max(0.0, value))))
                 .stroke(Color.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.2), value: value)
+                .animation(.easeInOut(duration: 0.2), value: value)
+            Text("\(Int(min(1.0, max(0.0, value)) * 100))%")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 }
