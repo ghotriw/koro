@@ -481,43 +481,29 @@ final class TTSService: ObservableObject {
         // 500 characters is a safe upper bound for most sentences.
         let effectiveLimit = min(500, max(50, calculatedLimit))
 
-        // Split by sentences OR newlines
+        // Initial split by sentences OR newlines
         let pattern = "(?<=[.!?])\\s+|\\n+"
-        let regex = try? NSRegularExpression(pattern: pattern)
-        let range = NSRange(text.startIndex..., in: text)
+        let rawSentences = splitByRegex(pattern, in: text)
 
-        var sentences: [String] = []
-        var lastEnd = text.startIndex
-
-        if let matches = regex?.matches(in: text, range: range) {
-            for match in matches {
-                if let matchRange = Range(match.range, in: text) {
-                    let sentence = String(text[lastEnd..<matchRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-                    if !sentence.isEmpty {
-                        sentences.append(sentence)
-                    }
-                    lastEnd = matchRange.upperBound
-                }
-            }
+        // Subdivide any sentence that exceeds effectiveLimit
+        var atomicUnits: [String] = []
+        for sentence in rawSentences {
+            atomicUnits.append(contentsOf: splitOversizedSentence(sentence, limit: effectiveLimit))
         }
 
-        let remaining = String(text[lastEnd...]).trimmingCharacters(in: .whitespaces)
-        if !remaining.isEmpty {
-            sentences.append(remaining)
-        }
-
-        // Group sentences into chunks using the dynamic limit
+        // Group atomic units into chunks without exceeding effectiveLimit
         var chunks: [String] = []
         var currentChunk = ""
 
-        for sentence in sentences {
-            if (currentChunk.count + sentence.count) < effectiveLimit {
-                currentChunk += (currentChunk.isEmpty ? "" : " ") + sentence
+        for unit in atomicUnits {
+            let separatorLength = currentChunk.isEmpty ? 0 : 1
+            if currentChunk.count + separatorLength + unit.count <= effectiveLimit {
+                currentChunk += (currentChunk.isEmpty ? "" : " ") + unit
             } else {
                 if !currentChunk.isEmpty {
                     chunks.append(currentChunk)
                 }
-                currentChunk = sentence
+                currentChunk = unit
             }
         }
 
@@ -526,6 +512,72 @@ final class TTSService: ObservableObject {
         }
 
         return chunks.isEmpty ? [text] : chunks
+    }
+
+    private func splitByRegex(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [text] }
+        let range = NSRange(text.startIndex..., in: text)
+
+        var parts: [String] = []
+        var lastEnd = text.startIndex
+
+        for match in regex.matches(in: text, range: range) {
+            if let matchRange = Range(match.range, in: text) {
+                let part = String(text[lastEnd..<matchRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                if !part.isEmpty {
+                    parts.append(part)
+                }
+                lastEnd = matchRange.upperBound
+            }
+        }
+
+        let remaining = String(text[lastEnd...]).trimmingCharacters(in: .whitespaces)
+        if !remaining.isEmpty {
+            parts.append(remaining)
+        }
+
+        return parts.isEmpty ? [text] : parts
+    }
+
+    private func splitOversizedSentence(_ sentence: String, limit: Int) -> [String] {
+        if sentence.count <= limit {
+            return [sentence]
+        }
+
+        // Try splitting by major secondary punctuation (; : — –)
+        let majorPunctuation = "(?<=[;:—–])\\s+"
+        let subSentences = splitByRegex(majorPunctuation, in: sentence)
+        if subSentences.count > 1 {
+            return subSentences.flatMap { splitOversizedSentence($0, limit: limit) }
+        }
+
+        // Try splitting by comma
+        let commaPunctuation = "(?<=[,])\\s+"
+        let commaParts = splitByRegex(commaPunctuation, in: sentence)
+        if commaParts.count > 1 {
+            return commaParts.flatMap { splitOversizedSentence($0, limit: limit) }
+        }
+
+        // Fallback: split by words
+        let words = sentence.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        var result: [String] = []
+        var current = ""
+
+        for word in words {
+            if current.isEmpty {
+                current = word
+            } else if current.count + 1 + word.count <= limit {
+                current += " " + word
+            } else {
+                result.append(current)
+                current = word
+            }
+        }
+        if !current.isEmpty {
+            result.append(current)
+        }
+
+        return result.isEmpty ? [sentence] : result
     }
 
     func saveAudio(samples: [Float], to url: URL) throws {
