@@ -101,14 +101,24 @@ final class P2PManager: NSObject, ObservableObject {
 
     // MARK: Private
 
-    private let serviceType = "_koro-sync._tcp"
-    private var listener: NWListener?
-    private var browser: NWBrowser?
+    /// Primary type plus `_http._tcp` fallback: hosts like LiveContainer only allow Bonjour types from
+    /// their own Info.plist allowlist, which includes `_http._tcp` but not ours. Discovery on `_http._tcp`
+    /// is therefore strictly filtered by the TXT marker below.
+    private let serviceTypes = ["_koro-sync._tcp", "_http._tcp"]
+    private static let txtMarkerKey = "koro"
+    private static let txtMarkerValue = "1"
+    private var listeners: [NWListener] = []
+    private var browsers: [NWBrowser] = []
     private let networkQueue = DispatchQueue(label: "com.koro.p2p.network", qos: .userInitiated)
 
     var activeConnections: [UUID: PeerConnection] = [:]
     var pendingConnections: [PeerConnection] = []
-    var pendingOutboundEndpoints: Set<NWEndpoint> = []
+    /// Peers we currently have an outbound attempt (connecting or awaiting Hello) for.
+    var pendingOutboundPeerIDs: Set<UUID> = []
+    /// Candidate endpoints per service type, keyed by peer id. One peer may appear under several types.
+    private var discovered: [String: [UUID: (name: String, endpoint: NWEndpoint)]] = [:]
+    /// Endpoints that already failed for a peer; the next attempt falls through to another service type.
+    private var failedEndpoints: [UUID: Set<NWEndpoint>] = [:]
     private(set) var modelContext: ModelContext?
     private var resourceStartTimes: [String: Date] = [:]
     private var sessionBytesTransferred: Int64 = 0
@@ -150,19 +160,23 @@ final class P2PManager: NSObject, ObservableObject {
         resourceStartTimes.removeAll()
         activeConnections.removeAll()
         pendingConnections.removeAll()
-        pendingOutboundEndpoints.removeAll()
+        pendingOutboundPeerIDs.removeAll()
+        discovered.removeAll()
+        failedEndpoints.removeAll()
         peers.removeAll()
 
         syncLog("🔵 P2P started — own ID: \(P2PManager.ownPeerUUID) [Network.framework]")
-        startListener()
-        startBrowser()
+        for type in serviceTypes {
+            startListener(type: type)
+            startBrowser(type: type)
+        }
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
-        browser?.cancel()
-        browser = nil
+        listeners.forEach { $0.cancel() }
+        listeners.removeAll()
+        browsers.forEach { $0.cancel() }
+        browsers.removeAll()
 
         for conn in activeConnections.values {
             conn.cancel()
@@ -172,7 +186,9 @@ final class P2PManager: NSObject, ObservableObject {
             conn.cancel()
         }
         pendingConnections.removeAll()
-        pendingOutboundEndpoints.removeAll()
+        pendingOutboundPeerIDs.removeAll()
+        discovered.removeAll()
+        failedEndpoints.removeAll()
         peers.removeAll()
         resourceStartTimes.removeAll()
         activeTransfersCount = 0
@@ -186,6 +202,9 @@ final class P2PManager: NSObject, ObservableObject {
         tcpOptions.enableKeepalive = true
         tcpOptions.keepaliveIdle = 2
         tcpOptions.noDelay = true
+        // Fail a SYN sent into the void (peer left Wi-Fi, stale Bonjour record) in seconds instead of ~75 s,
+        // so the .waiting/.failed handling and endpoint fallback kick in quickly.
+        tcpOptions.connectionTimeout = 10
 
         let params = NWParameters(tls: nil, tcp: tcpOptions)
         params.prohibitedInterfaceTypes = [.cellular]
@@ -198,11 +217,12 @@ final class P2PManager: NSObject, ObservableObject {
         return params
     }
 
-    private func startListener() {
+    private func startListener(type serviceType: String) {
         do {
             let params = createNetworkParameters()
             let l = try NWListener(using: params)
             var txt = NWTXTRecord()
+            txt[P2PManager.txtMarkerKey] = P2PManager.txtMarkerValue
             txt["id"] = P2PManager.ownPeerUUID.uuidString
             l.service = NWListener.Service(name: UIDevice.current.name, type: serviceType, txtRecord: txt)
 
@@ -210,11 +230,11 @@ final class P2PManager: NSObject, ObservableObject {
                 Task { @MainActor in
                     switch state {
                     case .ready:
-                        syncLog("🎧 NWListener ready and advertising \(UIDevice.current.name)")
+                        syncLog("🎧 NWListener ready and advertising \(UIDevice.current.name) [\(serviceType)]")
                     case .waiting(let error):
-                        syncLog("⏳ NWListener waiting: \(error)")
+                        syncLog("⏳ NWListener waiting [\(serviceType)]: \(error)")
                     case .failed(let error):
-                        syncLog("⚠️ NWListener failed: \(error)")
+                        syncLog("⚠️ NWListener failed [\(serviceType)]: \(error)")
                     default:
                         break
                     }
@@ -228,13 +248,13 @@ final class P2PManager: NSObject, ObservableObject {
             }
 
             l.start(queue: networkQueue)
-            self.listener = l
+            self.listeners.append(l)
         } catch {
             syncLog("❌ Failed to create NWListener: \(error)")
         }
     }
 
-    private func startBrowser() {
+    private func startBrowser(type serviceType: String) {
         let params = createBrowserParameters()
         let b = NWBrowser(for: .bonjourWithTXTRecord(type: serviceType, domain: nil), using: params)
 
@@ -242,11 +262,11 @@ final class P2PManager: NSObject, ObservableObject {
             Task { @MainActor in
                 switch state {
                 case .ready:
-                    syncLog("🔍 NWBrowser searching for peers on Wi-Fi…")
+                    syncLog("🔍 NWBrowser searching for peers on Wi-Fi… [\(serviceType)]")
                 case .waiting(let error):
-                    syncLog("⏳ NWBrowser waiting: \(error)")
+                    syncLog("⏳ NWBrowser waiting [\(serviceType)]: \(error)")
                 case .failed(let error):
-                    syncLog("⚠️ NWBrowser failed: \(error)")
+                    syncLog("⚠️ NWBrowser failed [\(serviceType)]: \(error)")
                 default:
                     break
                 }
@@ -255,47 +275,87 @@ final class P2PManager: NSObject, ObservableObject {
 
         b.browseResultsChangedHandler = { [weak self] results, changes in
             Task { @MainActor [weak self] in
-                syncLog("🔍 NWBrowser update: \(results.count) peer(s) found")
-                self?.handleDiscoveredEndpoints(results)
+                syncLog("🔍 NWBrowser update [\(serviceType)]: \(results.count) result(s)")
+                self?.handleDiscoveredEndpoints(results, type: serviceType)
             }
         }
 
         b.start(queue: networkQueue)
-        self.browser = b
+        self.browsers.append(b)
     }
 
-    private func handleDiscoveredEndpoints(_ results: Set<NWBrowser.Result>) {
+    private func handleDiscoveredEndpoints(_ results: Set<NWBrowser.Result>, type: String) {
+        let ownID = P2PManager.ownPeerUUID
+        var found: [UUID: (name: String, endpoint: NWEndpoint)] = [:]
+
         for result in results {
-            guard case .service(let name, _, _, _) = result.endpoint else {
-                continue
-            }
-            if name == UIDevice.current.name {
-                continue
-            }
-            if pendingOutboundEndpoints.contains(result.endpoint) { continue }
-            if activeConnections.values.contains(where: { $0.displayName == name }) { continue }
+            guard case .service(let name, _, _, _) = result.endpoint else { continue }
+
+            // Strict filter: only services carrying our TXT marker and a valid peer id.
+            // Mandatory because `_http._tcp` is shared with printers, routers, NAS, etc.
+            guard case .bonjour(let txt) = result.metadata,
+                  txt[P2PManager.txtMarkerKey] == P2PManager.txtMarkerValue,
+                  let idStr = txt["id"], let remoteID = UUID(uuidString: idStr) else { continue }
+
+            if remoteID == ownID { continue }
 
             // Deterministic initiator: device with the greater peer UUID initiates connection
-            if case .bonjour(let txt) = result.metadata, let remoteUUIDStr = txt["id"] {
-                let ownUUIDStr = P2PManager.ownPeerUUID.uuidString
-                if ownUUIDStr < remoteUUIDStr {
-                    syncLog("⏳ Discovered \(name) — waiting for remote to connect (their ID is greater)")
-                    continue
-                }
+            if ownID.uuidString < remoteID.uuidString {
+                syncLog("⏳ Discovered \(name) [\(type)] — waiting for remote to connect (their ID is greater)")
+                continue
             }
+            found[remoteID] = (name, result.endpoint)
+        }
+        discovered[type] = found
 
-            syncLog("🎯 Discovered peer: \(name) — connecting…")
-            pendingOutboundEndpoints.insert(result.endpoint)
-            connect(to: result.endpoint, displayName: name)
+        // A fresh browse update gives previously failed endpoints another chance (unless an attempt is running).
+        failedEndpoints = failedEndpoints.filter { pendingOutboundPeerIDs.contains($0.key) }
+
+        for id in Set(discovered.values.flatMap { $0.keys }) {
+            connectIfNeeded(peerID: id)
         }
     }
 
-    private func connect(to endpoint: NWEndpoint, displayName: String) {
+    /// Starts one outbound attempt for the peer, using the first service type whose endpoint hasn't failed yet.
+    private func connectIfNeeded(peerID: UUID) {
+        guard activeConnections[peerID] == nil, !pendingOutboundPeerIDs.contains(peerID) else { return }
+        let failed = failedEndpoints[peerID] ?? []
+        for type in serviceTypes {
+            guard let candidate = discovered[type]?[peerID], !failed.contains(candidate.endpoint) else { continue }
+            syncLog("🎯 Discovered peer: \(candidate.name) [\(type)] — connecting…")
+            pendingOutboundPeerIDs.insert(peerID)
+            connect(to: candidate.endpoint, displayName: candidate.name, expectedPeerID: peerID)
+            return
+        }
+    }
+
+    /// Called when an outbound attempt ended before a valid Hello; falls back to the peer's other service type.
+    func outboundAttemptFailed(peerID: UUID, endpoint: NWEndpoint) {
+        failedEndpoints[peerID, default: []].insert(endpoint)
+        connectIfNeeded(peerID: peerID)
+    }
+
+    private func connect(to endpoint: NWEndpoint, displayName: String, expectedPeerID: UUID) {
         let params = createNetworkParameters()
         let conn = NWConnection(to: endpoint, using: params)
         let peerConn = PeerConnection(connection: conn, displayName: displayName, endpoint: endpoint, isOutbound: true, manager: self)
+        peerConn.expectedPeerID = expectedPeerID
         pendingConnections.append(peerConn)
         peerConn.start()
+    }
+
+    /// Checks done before a listener answers with its own Hello (no manifest for self/duplicate connections).
+    func shouldAccept(hello: HelloPayload, connection: PeerConnection) -> Bool {
+        if hello.peerUUID == P2PManager.ownPeerUUID { return false }
+        if let existing = activeConnections[hello.peerUUID], existing !== connection {
+            // Only the device with the greater UUID initiates, so a fresh inbound connection means the peer
+            // already dropped the old one (e.g. app restart) — replace it. Outbound duplicates are dropped.
+            guard !connection.isOutbound else { return false }
+            syncLog("♻️ Replacing stale connection with \(hello.displayName)")
+            activeConnections.removeValue(forKey: hello.peerUUID)
+            existing.cancel()
+        }
+        return true
     }
 
     private func handleInboundConnection(_ conn: NWConnection) {
@@ -309,6 +369,10 @@ final class P2PManager: NSObject, ObservableObject {
     func handlePeerHello(hello: HelloPayload, connection: PeerConnection) {
         pendingConnections.removeAll { $0 === connection }
         let remoteUUID = hello.peerUUID
+        if remoteUUID == P2PManager.ownPeerUUID {
+            connection.cancel()
+            return
+        }
         let remoteName = hello.displayName
         connection.displayName = remoteName
 
@@ -404,6 +468,39 @@ final class PeerConnection: @unchecked Sendable {
     let isOutbound: Bool
     weak var manager: P2PManager?
     var peerUUID: UUID?
+    var expectedPeerID: UUID?
+    private let finishLock = NSLock()
+    private var finished = false
+    private var _receivedHello = false
+    private var connectTimer: DispatchWorkItem?
+
+    /// Written on the connection queue, read from any thread — guarded by `finishLock`.
+    private var receivedHello: Bool {
+        get { finishLock.lock(); defer { finishLock.unlock() }; return _receivedHello }
+        set { finishLock.lock(); _receivedHello = newValue; finishLock.unlock() }
+    }
+
+    // Protocol limits — frames from non-Koro clients (e.g. HTTP on `_http._tcp`) are rejected early.
+    private static let helloTimeout: TimeInterval = 10
+    /// How long a connection may sit in `.waiting` (unreachable/stale endpoint) before we give up and try the next one.
+    private static let connectTimeout: TimeInterval = 12
+    private static let maxHelloSize: UInt64 = 16 * 1024 * 1024
+    private static let maxHeaderSize: UInt32 = 4096
+    // Wire format: "KORO" magic (4) | version (1) | type (1) | headerLen u32 BE (4) | dataLen u64 BE (8)
+    static let frameMagic: [UInt8] = [0x4B, 0x4F, 0x52, 0x4F]
+    static let protocolVersion: UInt8 = 1
+    static let frameHeaderSize = 18
+
+    static func makeFrameHeader(type: UInt8, headerLen: UInt32, dataLen: UInt64) -> Data {
+        var d = Data(frameMagic)
+        d.append(protocolVersion)
+        d.append(type)
+        withUnsafeBytes(of: headerLen.bigEndian) { d.append(contentsOf: $0) }
+        withUnsafeBytes(of: dataLen.bigEndian) { d.append(contentsOf: $0) }
+        return d
+    }
+
+    private static let maxResourceSize: UInt64 = 1024 * 1024 * 1024
 
     private let queue = DispatchQueue(label: "com.koro.p2p.peerconnection", qos: .userInitiated)
 
@@ -422,11 +519,21 @@ final class PeerConnection: @unchecked Sendable {
             switch state {
             case .ready:
                 syncLog("🟢 Connected: \(self.displayName)")
+                self.connectTimer?.cancel()
+                self.connectTimer = nil
+                // Start the Hello timer only now: while a Local Network prompt is open the connection
+                // legitimately sits in .waiting for longer than the timeout.
+                self.queue.asyncAfter(deadline: .now() + PeerConnection.helloTimeout) { [weak self] in
+                    guard let self, !self.receivedHello else { return }
+                    syncLog("⏱ No valid Hello from \(self.displayName) — dropping")
+                    self.cancel(retryOtherEndpoint: true)
+                }
                 Task { @MainActor in
                     self.handleConnected()
                 }
             case .waiting(let error):
                 syncLog("⏳ Connection waiting with \(self.displayName): \(error)")
+                self.armConnectTimerIfNeeded(for: error)
             case .failed(let error):
                 syncLog("⚠️ Connection error with \(self.displayName): \(error)")
                 self.handleDisconnect()
@@ -439,41 +546,73 @@ final class PeerConnection: @unchecked Sendable {
         connection.start(queue: queue)
     }
 
-    func cancel() {
-        connection.cancel()
-        Task { @MainActor in
-            self.manager?.pendingConnections.removeAll { $0 === self }
-            if let ep = self.endpoint {
-                self.manager?.pendingOutboundEndpoints.remove(ep)
+    /// NWConnection often stays in `.waiting` (ECONNREFUSED/ETIMEDOUT) instead of failing, e.g. for a stale Bonjour
+    /// record. Without a timeout such an attempt would block the peer forever and the fallback endpoint would
+    /// never be tried. PolicyDenied (-65570) is the exception: it means the Local Network prompt is still open
+    /// (or permission is missing), so we keep waiting.
+    private func armConnectTimerIfNeeded(for error: NWError) {
+        if case .dns(let code) = error, code == -65570 { return }
+        queue.async { [weak self] in
+            guard let self, self.connectTimer == nil else { return }
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.connection.state != .ready else { return }
+                syncLog("⏱ Connection to \(self.displayName) still not ready — trying next endpoint")
+                self.cancel(retryOtherEndpoint: true)
             }
-            if let uuid = self.peerUUID, self.manager?.activeConnections[uuid] === self {
-                self.manager?.activeConnections.removeValue(forKey: uuid)
-                self.manager?.peers.removeAll { $0.id == uuid }
+            self.connectTimer = item
+            self.queue.asyncAfter(deadline: .now() + PeerConnection.connectTimeout, execute: item)
+        }
+    }
+
+    /// Explicitly closes the connection. Pass `retryOtherEndpoint` to let the manager fall back to
+    /// the peer's other service type (only meaningful for outbound attempts that never got a Hello).
+    func cancel(retryOtherEndpoint: Bool = false) {
+        connection.cancel()
+        cleanup(retry: retryOtherEndpoint)
+    }
+
+    private func handleDisconnect() {
+        cleanup(retry: true)
+    }
+
+    /// Single teardown path (idempotent): drops pending/active bookkeeping once.
+    private func cleanup(retry: Bool) {
+        finishLock.lock()
+        let alreadyFinished = finished
+        finished = true
+        finishLock.unlock()
+        if alreadyFinished { return }
+
+        // connectTimer is owned by `queue`; cancel it there to avoid racing the writer.
+        queue.async { [weak self] in
+            self?.connectTimer?.cancel()
+            self?.connectTimer = nil
+        }
+        let helloDone = receivedHello
+        Task { @MainActor in
+            guard let manager = self.manager else { return }
+            manager.pendingConnections.removeAll { $0 === self }
+            if let id = self.expectedPeerID { manager.pendingOutboundPeerIDs.remove(id) }
+            if let uuid = self.peerUUID, manager.activeConnections[uuid] === self {
+                manager.activeConnections.removeValue(forKey: uuid)
+                manager.peers.removeAll { $0.id == uuid }
                 syncLog("🔴 Disconnected: \(self.displayName)")
+            }
+            if retry, self.isOutbound, !helloDone, let id = self.expectedPeerID, let ep = self.endpoint {
+                manager.outboundAttemptFailed(peerID: id, endpoint: ep)
             }
         }
     }
 
     @MainActor
     private func handleConnected() {
-        guard let manager = self.manager, let context = manager.modelContext,
-              let manifest = SyncManifest.build(from: context) else { return }
-        sendHello(manifest: manifest)
-        startReceiving()
-    }
-
-    private func handleDisconnect() {
-        Task { @MainActor in
-            self.manager?.pendingConnections.removeAll { $0 === self }
-            if let ep = self.endpoint {
-                self.manager?.pendingOutboundEndpoints.remove(ep)
-            }
-            if let uuid = self.peerUUID, self.manager?.activeConnections[uuid] === self {
-                self.manager?.activeConnections.removeValue(forKey: uuid)
-                self.manager?.peers.removeAll { $0.id == uuid }
-                syncLog("🔴 Disconnected: \(self.displayName)")
-            }
+        // Only the initiator speaks first; the listener answers after a valid Hello arrives.
+        if isOutbound {
+            guard let manager = self.manager, let context = manager.modelContext,
+                  let manifest = SyncManifest.build(from: context) else { return }
+            sendHello(manifest: manifest)
         }
+        startReceiving()
     }
 
     // MARK: - Framing & Sending
@@ -488,22 +627,7 @@ final class PeerConnection: @unchecked Sendable {
         let headerLen: UInt32 = 0
         let dataLen = UInt64(data.count)
 
-        var frame = Data(count: 13)
-        frame[0] = 0x01
-        frame[1] = UInt8((headerLen >> 24) & 0xFF)
-        frame[2] = UInt8((headerLen >> 16) & 0xFF)
-        frame[3] = UInt8((headerLen >> 8) & 0xFF)
-        frame[4] = UInt8(headerLen & 0xFF)
-
-        frame[5] = UInt8((dataLen >> 56) & 0xFF)
-        frame[6] = UInt8((dataLen >> 48) & 0xFF)
-        frame[7] = UInt8((dataLen >> 40) & 0xFF)
-        frame[8] = UInt8((dataLen >> 32) & 0xFF)
-        frame[9] = UInt8((dataLen >> 24) & 0xFF)
-        frame[10] = UInt8((dataLen >> 16) & 0xFF)
-        frame[11] = UInt8((dataLen >> 8) & 0xFF)
-        frame[12] = UInt8(dataLen & 0xFF)
-
+        var frame = PeerConnection.makeFrameHeader(type: 0x01, headerLen: headerLen, dataLen: dataLen)
         frame.append(data)
 
         connection.send(content: frame, completion: .contentProcessed { error in
@@ -525,22 +649,7 @@ final class PeerConnection: @unchecked Sendable {
         let headerLen = UInt32(nameData.count)
         let dataLen = UInt64(fileData.count)
 
-        var frame = Data(count: 13)
-        frame[0] = 0x02
-        frame[1] = UInt8((headerLen >> 24) & 0xFF)
-        frame[2] = UInt8((headerLen >> 16) & 0xFF)
-        frame[3] = UInt8((headerLen >> 8) & 0xFF)
-        frame[4] = UInt8(headerLen & 0xFF)
-
-        frame[5] = UInt8((dataLen >> 56) & 0xFF)
-        frame[6] = UInt8((dataLen >> 48) & 0xFF)
-        frame[7] = UInt8((dataLen >> 40) & 0xFF)
-        frame[8] = UInt8((dataLen >> 32) & 0xFF)
-        frame[9] = UInt8((dataLen >> 24) & 0xFF)
-        frame[10] = UInt8((dataLen >> 16) & 0xFF)
-        frame[11] = UInt8((dataLen >> 8) & 0xFF)
-        frame[12] = UInt8(dataLen & 0xFF)
-
+        var frame = PeerConnection.makeFrameHeader(type: 0x02, headerLen: headerLen, dataLen: dataLen)
         frame.append(nameData)
         frame.append(fileData)
 
@@ -562,31 +671,50 @@ final class PeerConnection: @unchecked Sendable {
     }
 
     private func receiveHeader() {
-        connection.receive(minimumIncompleteLength: 13, maximumLength: 13) { [weak self] content, _, isComplete, error in
+        let size = PeerConnection.frameHeaderSize
+        connection.receive(minimumIncompleteLength: size, maximumLength: size) { [weak self] content, _, isComplete, error in
             guard let self else { return }
             if error != nil {
                 self.handleDisconnect()
                 return
             }
-            guard let content, content.count == 13 else {
+            guard let content, content.count == size else {
                 if isComplete { self.handleDisconnect() }
                 return
             }
 
-            let type = content[0]
-            let headerLen = (UInt32(content[1]) << 24)
-                          | (UInt32(content[2]) << 16)
-                          | (UInt32(content[3]) << 8)
-                          | (UInt32(content[4]))
+            let bytes = [UInt8](content)
+            guard Array(bytes[0..<4]) == PeerConnection.frameMagic else {
+                syncLog("🚫 Not a Koro peer (bad magic) from \(self.displayName) — dropping")
+                self.cancel()
+                return
+            }
+            guard bytes[4] == PeerConnection.protocolVersion else {
+                syncLog("🚫 Incompatible protocol version \(bytes[4]) (ours \(PeerConnection.protocolVersion)) from \(self.displayName) — dropping")
+                self.cancel()
+                return
+            }
 
-            let dataLen = (UInt64(content[5]) << 56)
-                        | (UInt64(content[6]) << 48)
-                        | (UInt64(content[7]) << 40)
-                        | (UInt64(content[8]) << 32)
-                        | (UInt64(content[9]) << 24)
-                        | (UInt64(content[10]) << 16)
-                        | (UInt64(content[11]) << 8)
-                        | (UInt64(content[12]))
+            let type = bytes[5]
+            let headerLen = bytes[6..<10].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            let dataLen = bytes[10..<18].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+
+            // Validate before converting to Int (UInt64 -> Int traps above Int.max).
+            let valid: Bool
+            if !self.receivedHello {
+                valid = type == 0x01 && headerLen == 0 && dataLen > 0 && dataLen <= PeerConnection.maxHelloSize
+            } else {
+                switch type {
+                case 0x01: valid = headerLen == 0 && dataLen > 0 && dataLen <= PeerConnection.maxHelloSize
+                case 0x02: valid = headerLen <= PeerConnection.maxHeaderSize && dataLen <= PeerConnection.maxResourceSize
+                default: valid = false
+                }
+            }
+            guard valid else {
+                syncLog("🚫 Invalid frame from \(self.displayName) (type \(type), \(dataLen) bytes) — dropping")
+                self.cancel()
+                return
+            }
 
             self.receivePayload(type: type, headerLen: Int(headerLen), dataLen: Int(dataLen))
         }
@@ -607,12 +735,33 @@ final class PeerConnection: @unchecked Sendable {
         if type == 0x01 { // Hello
             readExact(count: dataLen, toFile: nil) { [weak self] bodyData, error in
                 guard let self, let bodyData else { self?.handleDisconnect(); return }
-                if let hello = try? JSONDecoder().decode(HelloPayload.self, from: bodyData) {
-                    Task { @MainActor in
-                        self.peerUUID = hello.peerUUID
-                        self.displayName = hello.displayName
-                        self.manager?.handlePeerHello(hello: hello, connection: self)
+                guard let hello = try? JSONDecoder().decode(HelloPayload.self, from: bodyData) else {
+                    syncLog("🚫 Malformed Hello from \(self.displayName) — dropping")
+                    self.cancel()
+                    return
+                }
+                if let expected = self.expectedPeerID, expected != hello.peerUUID {
+                    syncLog("🚫 Hello id mismatch from \(self.displayName) — dropping")
+                    self.cancel()
+                    return
+                }
+                self.receivedHello = true
+                Task { @MainActor in
+                    self.peerUUID = hello.peerUUID
+                    self.displayName = hello.displayName
+                    // Listener side: reply with our Hello first so it precedes any sync traffic.
+                    if !self.isOutbound {
+                        guard self.manager?.shouldAccept(hello: hello, connection: self) == true else {
+                            syncLog("🔀 Rejecting \(hello.displayName) before replying (self)")
+                            self.cancel()
+                            return
+                        }
+                        if let context = self.manager?.modelContext,
+                           let manifest = SyncManifest.build(from: context) {
+                            self.sendHello(manifest: manifest)
+                        }
                     }
+                    self.manager?.handlePeerHello(hello: hello, connection: self)
                 }
                 self.receiveHeader()
             }

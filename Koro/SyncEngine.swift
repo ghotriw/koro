@@ -60,6 +60,7 @@ enum SyncEngine {
         var audioReceived = false
         var tokensReceived = false
         var bodyText: String = ""
+        /// Received audio, staged OUTSIDE Documents until the entry is complete (audio + tokens must swap together).
         var audioLocalURL: URL?
         var tokensData: Data?
 
@@ -382,6 +383,38 @@ enum SyncEngine {
 
     /// Stage an update: defer metadata write until all required resources arrive.
     /// If no resources are needed, apply immediately.
+    /// Registers a pending entry, discarding any audio staged by a previous pending record for the same id.
+    private static func setPending(_ p: PendingEntry) {
+        discardPending(entryId: p.record.id)
+        pendingEntryResources[p.record.id] = p
+    }
+
+    private static func discardPending(entryId: UUID) {
+        if let staged = pendingEntryResources[entryId]?.audioLocalURL {
+            try? FileManager.default.removeItem(at: staged)
+        }
+        pendingEntryResources.removeValue(forKey: entryId)
+    }
+
+    /// Moves staged audio into `Documents/<id>.m4a`, replacing the old file. Returns nil if the move fails.
+    private static func installAudio(staged: URL, entryId: UUID) -> URL? {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dest = docs.appendingPathComponent("\(entryId.uuidString).m4a")
+        do {
+            if fm.fileExists(atPath: dest.path) {
+                // Atomic: on failure the original stays in place.
+                _ = try fm.replaceItemAt(dest, withItemAt: staged)
+            } else {
+                try fm.moveItem(at: staged, to: dest)
+            }
+            return dest
+        } catch {
+            syncLog("❌ SyncEngine: Failed to install audio for \(entryId): \(error)")
+            return nil
+        }
+    }
+
     private static func stageOrApplyUpdate(_ r: SyncManifest.EntryRecord, existing l: Entry, localFolderMap: [UUID: Folder]) {
         let needsBody = (l.bodyHash != r.bodyHash)
         let needsAudio = hashesDisagree(localHash: l.audioHash, remoteHash: r.audioHash)
@@ -390,21 +423,21 @@ enum SyncEngine {
             applyEntryMetadata(r, to: l, localFolderMap: localFolderMap)
             return
         }
-        pendingEntryResources[r.id] = PendingEntry(
+        setPending(PendingEntry(
             record: r,
             isInsert: false,
             needsBody: needsBody,
             needsAudio: needsAudio
-        )
+        ))
     }
 
     private static func stageInsert(_ r: SyncManifest.EntryRecord) {
-        pendingEntryResources[r.id] = PendingEntry(
+        setPending(PendingEntry(
             record: r,
             isInsert: true,
             needsBody: true,
             needsAudio: r.audioHash != nil
-        )
+        ))
     }
 
     private static func applyEntryMetadata(_ r: SyncManifest.EntryRecord, to l: Entry, localFolderMap: [UUID: Folder]) {
@@ -568,13 +601,19 @@ enum SyncEngine {
             flushIfComplete(entryId: entryId, context: context, manager: manager, fromPeerUUID: fromPeerUUID)
 
         case "audio":
-            guard let entryId = UUID(uuidString: idStr) else { return }
-            let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let destURL = docs.appendingPathComponent("\(entryId.uuidString).m4a")
-            try? fm.removeItem(at: destURL)
-            try? fm.moveItem(at: tempURL, to: destURL)
+            guard let entryId = UUID(uuidString: idStr) else { try? fm.removeItem(at: tempURL); return }
+            // Accept audio only for an entry we requested; otherwise a peer could overwrite any local file.
+            guard pendingEntryResources[entryId]?.needsAudio == true else {
+                syncLog("🚫 Unrequested audio for \(entryId) from \(fromPeerUUID) — discarded")
+                try? fm.removeItem(at: tempURL)
+                return
+            }
+            // Stage the file where it was received; Documents/<id>.m4a is only touched in flushIfComplete.
+            if let previous = pendingEntryResources[entryId]?.audioLocalURL, previous != tempURL {
+                try? fm.removeItem(at: previous)
+            }
             pendingEntryResources[entryId]?.audioReceived = true
-            pendingEntryResources[entryId]?.audioLocalURL = destURL
+            pendingEntryResources[entryId]?.audioLocalURL = tempURL
             flushIfComplete(entryId: entryId, context: context, manager: manager, fromPeerUUID: fromPeerUUID)
 
         case "tokens":
@@ -611,6 +650,33 @@ enum SyncEngine {
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let r = pending.record
 
+        // Update path: resolve the local entry first. If it was deleted locally meanwhile, bail out
+        // before any file is installed (otherwise Documents/<id>.m4a would be left orphaned).
+        var existingEntry: Entry?
+        if !pending.isInsert {
+            let desc = FetchDescriptor<Entry>(predicate: #Predicate { $0.id == entryId })
+            guard let found = try? context.fetch(desc).first else {
+                discardPending(entryId: entryId)
+                checkCompletion(for: fromPeerUUID, manager: manager)
+                return
+            }
+            existingEntry = found
+        }
+
+        // All-or-nothing: install the audio BEFORE touching the DB. If it fails, leave the entry
+        // (and its version) untouched so the next merge sees "remote newer"/"new remote" and retries.
+        var installedAudioURL: URL?
+        if pending.needsAudio {
+            guard let staged = pending.audioLocalURL,
+                  let url = installAudio(staged: staged, entryId: entryId) else {
+                syncLog("⚠️ SyncEngine: Entry \(entryId) skipped — audio install failed, will retry on next sync")
+                discardPending(entryId: entryId)
+                checkCompletion(for: fromPeerUUID, manager: manager)
+                return
+            }
+            installedAudioURL = url
+        }
+
         if pending.isInsert {
             // Resurrection: delete any local tombstone for this id
             let tDesc = FetchDescriptor<Tombstone>(predicate: #Predicate { $0.id == entryId })
@@ -641,18 +707,14 @@ enum SyncEngine {
             entry.lastPosition = r.lastPosition
             entry.lastPositionUpdatedAt = r.lastPositionUpdatedAt
 
-            if pending.needsAudio, let audioURL = pending.audioLocalURL {
+            if let audioURL = installedAudioURL {
                 entry.audioFileURL = audioURL
                 entry.tokens = pending.tokensData
             }
             context.insert(entry)
 
         } else {
-            let desc = FetchDescriptor<Entry>(predicate: #Predicate { $0.id == entryId })
-            guard let entry = try? context.fetch(desc).first else {
-                pendingEntryResources.removeValue(forKey: entryId)
-                return
-            }
+            guard let entry = existingEntry else { return }
             // Resolve folder map fresh
             let folders = (try? context.fetch(FetchDescriptor<Folder>())) ?? []
             let folderMap = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
@@ -662,7 +724,7 @@ enum SyncEngine {
                 entry.body = pending.bodyText
                 entry.bodyHash = r.bodyHash ?? FileHashing.sha256(string: pending.bodyText)
             }
-            if pending.needsAudio, let audioURL = pending.audioLocalURL {
+            if let audioURL = installedAudioURL {
                 // Delete old audio file if it differs
                 if let oldURL = entry.audioFileURL, oldURL.lastPathComponent != audioURL.lastPathComponent {
                     let resolved = docs.appendingPathComponent(oldURL.lastPathComponent)
@@ -681,7 +743,7 @@ enum SyncEngine {
         }
 
         try? context.save()
-        pendingEntryResources.removeValue(forKey: entryId)
+        discardPending(entryId: entryId)
         checkCompletion(for: fromPeerUUID, manager: manager)
     }
 

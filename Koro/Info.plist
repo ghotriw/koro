@@ -8,6 +8,7 @@
 	<array>
 		<string>_koro-sync._tcp</string>
 		<string>_koro-sync._udp</string>
+		<string>_http._tcp</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
